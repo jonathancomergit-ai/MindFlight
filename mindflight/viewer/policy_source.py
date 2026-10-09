@@ -36,6 +36,7 @@ SHOW = {
     "gates": ("shared", 8, 0.0, 20.0),
     "obstacles": ("grid", 4, 10.0, None),
     "race": ("shared", 8, 0.0, 20.0),
+    "follow": ("grid", 4, 16.0, None),
 }
 
 
