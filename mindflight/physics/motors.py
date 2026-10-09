@@ -53,7 +53,11 @@ def motor_layout_on(
 
 
 def motor_step(
-    rpm: torch.Tensor, rpm_cmd: torch.Tensor, dt: float, params: CrazyflieParams = CRAZYFLIE
+    rpm: torch.Tensor,
+    rpm_cmd: torch.Tensor,
+    dt: float,
+    params: CrazyflieParams = CRAZYFLIE,
+    tau_scale: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Advance the motor speeds by one time step of `dt` seconds.
 
@@ -65,9 +69,13 @@ def motor_step(
     The command and the result are clamped to [0, max_rpm]: a motor can't spin backwards or past full throttle.
 
     rpm, rpm_cmd: (N, 4) in RPM. Returns the new (N, 4) RPM.
+    tau_scale: optional (N,), each drone's time constant × this (Level 5: laggier or snappier motors).
     """
     rpm_cmd = rpm_cmd.clamp(0.0, params.max_rpm)
-    fraction_closed = 1.0 - math.exp(-dt / params.motor_time_constant_s)
+    if tau_scale is None:
+        fraction_closed = 1.0 - math.exp(-dt / params.motor_time_constant_s)
+    else:
+        fraction_closed = 1.0 - torch.exp(-dt / (params.motor_time_constant_s * tau_scale[:, None]))
     new_rpm = rpm + (rpm_cmd - rpm) * fraction_closed
     return new_rpm.clamp(0.0, params.max_rpm)
 

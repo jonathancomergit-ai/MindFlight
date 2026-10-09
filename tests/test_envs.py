@@ -256,6 +256,25 @@ def test_curriculum_climbs_when_success_is_high():
     assert fixed.difficulty == 0.3
 
 
+def test_sturdy_randomizes_drones_and_wind_and_gusts_move():
+    from mindflight.envs.sturdy import SturdyEnv
+
+    env = SturdyEnv(256, device="cpu", seed=4)
+    env.reset()
+    v = env.variation
+    assert 0.8 <= v.mass_scale.min() and v.mass_scale.max() <= 1.2 and v.mass_scale.std() > 0.05
+    assert 0.7 <= v.motor_tau_scale.min() and v.motor_tau_scale.max() <= 1.5
+    assert env.steady_wind[:, :2].norm(dim=1).max() <= 2.0 + 1e-5 and env.steady_wind[:, 2].abs().max() == 0
+    wind_before = v.wind_mps.clone()
+    env.step(torch.zeros(256, 4))
+    assert not torch.equal(v.wind_mps, wind_before)  # gusts changed it
+
+    calm = SturdyEnv(8, device="cpu", randomize=False)
+    calm.reset()
+    calm.step(torch.zeros(8, 4))
+    assert torch.all(calm.variation.mass_scale == 1) and torch.all(calm.variation.wind_mps == 0)
+
+
 def test_staggered_reset_spreads_episode_clocks():
     env = HoverEnv(512, device="cpu", seed=1)
     env.reset(stagger=True)

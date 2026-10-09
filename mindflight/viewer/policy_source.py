@@ -32,8 +32,10 @@ from mindflight.rl.ppo import ActorCritic
 SHOW = {
     "hover": ("grid", 64, 3.0, None),
     "waypoint": ("grid", 36, 4.5, None),
+    "sturdy": ("grid", 36, 4.5, None),
     "gates": ("shared", 8, 0.0, 20.0),
     "obstacles": ("grid", 4, 10.0, None),
+    "race": ("shared", 8, 0.0, 20.0),
 }
 
 
@@ -176,6 +178,9 @@ class PolicySource:
             headings = objects["gate_heading"]  # (N, G)
             opening = objects["gate_opening"]  # (N,)
             next_gate = objects["next_gate"]  # (N,)
+            racing = self.racing_mask()
+            if shared and racing.any():
+                next_gate = next_gate[racing]  # gate colours follow only the drones still in the running
             n_gates = centres.shape[1]
             drones = [0] if shared else range(centres.shape[0])
             gates = []
@@ -207,6 +212,10 @@ class PolicySource:
                 if p[2] > 0
             ]
         return scene
+
+    def racing_mask(self) -> torch.Tensor:
+        """(N,) bool: drones whose progress the gate colours should follow. All of them here; the race overrides it."""
+        return torch.ones(self.env.n_envs, dtype=torch.bool, device=self.env.device)
 
     def state_messages(self) -> list[dict]:
         with self._lock:

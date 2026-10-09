@@ -37,11 +37,16 @@ def main() -> None:
     parser.add_argument("--n", type=int, default=1000, help="test episodes per policy (default 1000)")
     parser.add_argument("--seed", type=int, default=12345)
     parser.add_argument("--task", default=None, help="test every policy on this task instead of its own")
+    parser.add_argument("--env", nargs="*", default=[], metavar="KEY=VALUE", help="task options, e.g. gust_scale=2")
     args = parser.parse_args()
+    overrides = {}
+    for item in args.env:
+        key, value = item.split("=", 1)
+        overrides[key] = value.lower() == "true" if value.lower() in ("true", "false") else float(value)
 
     print(f"{'policy':<34} {'task':<10} {'success':>8} {'crashed':>8} {'return':>8} {'length':>7} {'lap':>7}")
     for path in args.policies:
-        s = score(path, n=args.n, seed=args.seed, task=args.task)
+        s = score(path, n=args.n, seed=args.seed, task=args.task, **overrides)
         lap = f"{s['lap_time_s']:6.2f}s" if "lap_time_s" in s else "      -"
         print(
             f"{path:<34} {s['task']:<10} {100 * s.get('success', 0):7.1f}% {100 * s['crashed']:7.1f}% "

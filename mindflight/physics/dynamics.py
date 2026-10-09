@@ -28,6 +28,7 @@ weighted average of those slopes, 1/6 · (k1 + 2·k2 + 2·k3 + k4). Its error sh
 
 import torch
 
+from mindflight.physics.aero import DroneVariation, aero_force_world
 from mindflight.physics.device_cache import cached_on_device
 from mindflight.physics.motors import motor_step, rotor_wrench
 from mindflight.physics.params import CRAZYFLIE, GRAVITY_MPS2, CrazyflieParams
@@ -110,7 +111,11 @@ def rotation_rates(
 
 
 def step(
-    state: torch.Tensor, rpm_cmd: torch.Tensor, dt: float = PHYSICS_DT_S, params: CrazyflieParams = CRAZYFLIE
+    state: torch.Tensor,
+    rpm_cmd: torch.Tensor,
+    dt: float = PHYSICS_DT_S,
+    params: CrazyflieParams = CRAZYFLIE,
+    variation: DroneVariation | None = None,
 ) -> torch.Tensor:
     """Advance every drone by `dt` seconds and return the new (N, 17) state (the input is not changed).
 
@@ -134,6 +139,10 @@ def step(
 
     Floor: a drone that ends below z = 0 is put back on z = 0 with zero linear velocity. Envs decide whether that
     counts as a crash.
+
+    variation (optional, Level 5): per-drone mass, thrust and motor-lag scales, wind, rotor drag and ground effect
+    (see `physics/aero.py`). Mass scales the inertia too. Drag and ground effect are added to the thrust force.
+    None = the standard Crazyflie in still air, exactly as before.
     """
     position_m = state[:, POS]
     quat = state[:, QUAT]
@@ -141,19 +150,33 @@ def step(
     omega_radps = state[:, OMEGA]
 
     # 1. Motors, then the force and torque they make (both in the body frame).
-    rpm = motor_step(state[:, RPM], rpm_cmd, dt, params)
+    tau_scale = variation.motor_tau_scale if variation is not None else None
+    rpm = motor_step(state[:, RPM], rpm_cmd, dt, params, tau_scale)
     thrust_body_n, torque_body_nm = rotor_wrench(rpm, params)
+    mass_kg = params.mass_kg
+    inertia_kgm2 = inertia_on(state.device, state.dtype, params)  # (Ixx, Iyy, Izz), cached on the state's device
+    if variation is not None:  # Level 5: per-drone differences (see physics/aero.py)
+        if variation.thrust_scale is not None:
+            thrust_body_n = thrust_body_n * variation.thrust_scale[:, None]
+            torque_body_nm = torque_body_nm * variation.thrust_scale[:, None]
+        if variation.mass_scale is not None:
+            mass_kg = params.mass_kg * variation.mass_scale[:, None]  # (N, 1)
+            inertia_kgm2 = inertia_kgm2 * variation.mass_scale[:, None]  # (N, 3): same shape, heavier
+    force_world_n = quat_rotate(quat, thrust_body_n)
+    if variation is not None and (variation.drag or variation.ground_effect or variation.downwash):
+        force_world_n = force_world_n + aero_force_world(
+            quat, position_m, velocity_mps, rpm, thrust_body_n, variation, params
+        )
 
     # 2. Linear acceleration in the world frame.
     gravity_mps2 = gravity_on(state.device, state.dtype)  # (0, 0, −g), cached on the state's device
-    accel_mps2 = quat_rotate(quat, thrust_body_n) / params.mass_kg + gravity_mps2
+    accel_mps2 = force_world_n / mass_kg + gravity_mps2
 
     # 3. Position and linear velocity: exact for an acceleration that is constant over the step.
     new_position_m = position_m + velocity_mps * dt + 0.5 * accel_mps2 * dt**2
     new_velocity_mps = velocity_mps + accel_mps2 * dt
 
     # 4. Orientation and angular velocity together, with RK4 (torque held constant over the step).
-    inertia_kgm2 = inertia_on(state.device, state.dtype, params)  # (Ixx, Iyy, Izz), cached on the state's device
     quat_k1, omega_k1 = rotation_rates(quat, omega_radps, torque_body_nm, inertia_kgm2)
     quat_k2, omega_k2 = rotation_rates(
         quat + 0.5 * dt * quat_k1, omega_radps + 0.5 * dt * omega_k1, torque_body_nm, inertia_kgm2
