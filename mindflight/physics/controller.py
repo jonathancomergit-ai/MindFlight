@@ -59,16 +59,21 @@ class ControllerGains:
 GAINS = ControllerGains()
 
 
-def attitude_action_to_setpoint(action: torch.Tensor, params: CrazyflieParams = CRAZYFLIE) -> torch.Tensor:
+def attitude_action_to_setpoint(
+    action: torch.Tensor, params: CrazyflieParams = CRAZYFLIE, max_tilt_rad: float = MAX_TILT_RAD
+) -> torch.Tensor:
     """Brain action (N, 4) in [−1, 1] -> setpoint (N, 4): thrust (N), roll (rad), pitch (rad), yaw rate (rad/s).
 
         thrust = weight · (1 + 1.25 · a0), clamped to [0, max thrust]
         roll = 30° · a1,   pitch = 30° · a2,   yaw rate = 180°/s · a3
+
+    max_tilt_rad: the roll/pitch limit (default 30°). A task that needs sharper moves can raise it; on the real
+    drone this limit is a firmware setting too, not a hardware one.
     """
     a = action.clamp(-1.0, 1.0)
     max_thrust_n = params.thrust_to_weight * params.weight_n
     thrust = (params.weight_n * (1.0 + THRUST_SPAN * a[:, 0])).clamp(0.0, max_thrust_n)
-    return torch.stack((thrust, MAX_TILT_RAD * a[:, 1], MAX_TILT_RAD * a[:, 2], MAX_YAW_RATE_RADPS * a[:, 3]), dim=1)
+    return torch.stack((thrust, max_tilt_rad * a[:, 1], max_tilt_rad * a[:, 2], MAX_YAW_RATE_RADPS * a[:, 3]), dim=1)
 
 
 def mix(thrust_n: torch.Tensor, torque_nm: torch.Tensor, params: CrazyflieParams = CRAZYFLIE) -> torch.Tensor:

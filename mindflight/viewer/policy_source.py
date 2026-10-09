@@ -36,6 +36,7 @@ SHOW = {
     "gates": ("shared", 8, 0.0, 20.0),
     "obstacles": ("grid", 4, 10.0, None),
     "race": ("shared", 8, 0.0, 20.0),
+    "intercept": ("grid", 4, 12.0, None),
 }
 
 
