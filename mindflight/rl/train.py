@@ -93,7 +93,10 @@ def evaluate(model: ActorCritic, env: DroneEnv, deterministic: bool = True, seed
             counted |= first
         if counted.all():
             break
-    return {key: (value / env.n_envs).item() for key, value in sums.items()}
+    result = {key: (value / env.n_envs).item() for key, value in sums.items()}
+    if "finish_time_s" in result and result.get("success", 0) > 0:
+        result["lap_time_s"] = result["finish_time_s"] / result["success"]  # average over finished laps only
+    return result
 
 
 def train(

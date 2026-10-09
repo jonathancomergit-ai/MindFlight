@@ -59,7 +59,8 @@ class WaypointEnv(HoverEnv):
         switch = (self.step_count % self.hold_steps == 0) & (self.step_count > 0)
         reached = switch & (self.close_steps >= self.settle_steps)
         self.targets_reached += reached.float()
-        ids = switch.nonzero(as_tuple=True)[0]
+        # A drone whose time is up keeps its last target, so the episode's final distance is measured to it.
+        ids = (switch & (self.step_count < self.max_steps)).nonzero(as_tuple=True)[0]
         if len(ids) > 0:
             self.target[ids] = self.random_targets(len(ids))
             self.close_steps[ids] = 0

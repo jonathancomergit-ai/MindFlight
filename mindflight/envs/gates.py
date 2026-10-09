@@ -57,6 +57,8 @@ class GatesEnv(DroneEnv):
     name = "gates"
     task_obs_size = 11
     has_curriculum = True
+    progress_weight = 10.0  # reward per metre closer to the next gate
+    time_cost = 0.0  # reward lost per step (the race task uses this to hurry)
 
     def __init__(
         self,
@@ -199,7 +201,8 @@ class GatesEnv(DroneEnv):
         twitch = ((self.action - self.prev_action) ** 2).sum(dim=1)
         last_gate = self.next_gate == N_GATES - 1
         reward = (
-            10.0 * progress
+            self.progress_weight * progress
+            - self.time_cost
             + PASS_BONUS * self.passed.float()
             + PASS_BONUS * (self.passed & last_gate).float()
             - 0.01 * spin
@@ -235,6 +238,8 @@ class GatesEnv(DroneEnv):
         return {
             "success": finished.float(),
             "gates_passed": self.next_gate[ids].float(),
+            # Lap time for finished episodes, 0 otherwise: average lap = sum of this / number of successes.
+            "finish_time_s": torch.where(finished, self.finish_time_s[ids], torch.zeros_like(self.finish_time_s[ids])),
         }
 
     def update_curriculum(self, episode_means: dict[str, float]) -> dict[str, float]:
