@@ -50,6 +50,10 @@ class DroneVariation:
     drag: apply rotor drag (needed for wind to do anything)
     ground_effect: apply ground effect
     world_id, downwash: apply downwash between drones that share a world (see `downwash_world`)
+    com_offset_m: the centre of mass sits (dx, dy) off the middle (an off-centre battery). The thrust then pushes
+        through a point that is not the centre of mass, which twists the drone:
+            τ = r × F,  r = (−dx, −dy, 0) from the centre of mass to the middle, F = (0, 0, T)
+            -> τx = −dy · T,  τy = dx · T            (a heavy nose, dx > 0, pitches the nose down)
     """
 
     mass_scale: torch.Tensor | None = None
@@ -60,6 +64,7 @@ class DroneVariation:
     ground_effect: bool = False
     world_id: torch.Tensor | None = None  # (N,) long: drones with the same id share the air (for downwash)
     downwash: bool = False
+    com_offset_m: torch.Tensor | None = None  # (N, 2): centre of mass off the geometric centre in x, y (body, m)
 
 
 @cached_on_device

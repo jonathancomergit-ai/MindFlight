@@ -23,7 +23,7 @@ changes ("got there and settled", not just flew through). An episode is 10 s, so
 
 import torch
 
-from mindflight.envs.hover import SUCCESS_RADIUS_M, HoverEnv
+from mindflight.envs.hover import HoverEnv
 from mindflight.physics.dynamics import POS
 
 TARGET_HOLD_S = 2.5
@@ -68,7 +68,7 @@ class WaypointEnv(HoverEnv):
 
     def _post_step(self) -> None:
         """Count steps spent close to the target; when its 2.5 s are up, score it and pick the next one."""
-        close = self.distance() < SUCCESS_RADIUS_M
+        close = self.distance() < self.success_radius_m
         self.close_steps = torch.where(close, self.close_steps + 1, torch.zeros_like(self.close_steps))
         switch = (self.step_count % self.hold_steps == 0) & (self.step_count > 0)
         reached = switch & (self.close_steps >= self.settle_steps)

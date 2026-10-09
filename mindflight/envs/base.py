@@ -32,6 +32,7 @@ import math
 import torch
 
 from mindflight.physics.aero import DroneVariation
+from mindflight.envs.sensing import SensorModel
 from mindflight.physics.controller import GAINS, attitude_action_to_setpoint, controller_step
 from mindflight.physics.dynamics import OMEGA, PHYSICS_DT_S, POS, QUAT, RPM, STATE_SIZE, VEL, step
 from mindflight.physics.fast import CudaGraphStepper
@@ -89,6 +90,8 @@ class DroneEnv:
         seed: int = 0,
         drone: "str | CrazyflieParams | None" = None,
         action_mode: str = "motors",
+        sensors: str = "ideal",
+        real_world: bool = False,
     ):
         """drone: which drone file to fly (mindflight/drones/<name>.json); None = the Crazyflie 2.1+.
 
@@ -96,6 +99,11 @@ class DroneEnv:
             "motors"   (Phase 1): each one is a motor's speed, rpm = hover · (1 + 0.5 · a).
             "attitude" (Phase 2): thrust, roll, pitch, yaw rate, handed to the onboard controller
                        (physics/controller.py), exactly the kind of command a real Crazyflie takes over the radio.
+        sensors: "ideal", "lighthouse" or "flowdeck": how noisy and late the state estimate the brain sees is
+            (envs/sensing.py). Observations are built from the estimate; rewards and crashes use the truth.
+        real_world: every episode the drone is a little different, like real hardware: mass ±8 %, prop strength
+            ±8 %, motor lag 0.7–1.5 ×, centre of mass up to 3 mm off-centre, a battery that weakens by up to 6 %
+            over 10 s; rotor drag and ground effect on (physics/aero.py).
         """
         if action_mode not in ("motors", "attitude"):
             raise ValueError(f"action_mode must be 'motors' or 'attitude', not {action_mode!r}")
@@ -117,8 +125,22 @@ class DroneEnv:
         self.episode_return = torch.zeros(n_envs, device=self.device)
         self.stepper: CudaGraphStepper | None = None  # built on first use (recording takes a few seconds)
         self.controller_integral = torch.zeros(n_envs, 3, device=self.device)  # attitude mode: the controller's memory
-        # Level 5: per-drone mass/thrust/motor lag, wind, drag, ground effect (physics/aero.py). None = standard.
+        # Level 5 / real_world: per-drone mass/thrust/motor lag, wind, drag, ground effect (physics/aero.py).
         self.variation: DroneVariation | None = None
+        self.sensors = SensorModel(sensors, n_envs, self.device, self.generator, POLICY_DT_S)
+        self.real_world = real_world
+        if real_world:
+            ones = torch.ones(n_envs, device=self.device)
+            self.variation = DroneVariation(
+                mass_scale=ones.clone(),
+                thrust_scale=ones.clone(),
+                motor_tau_scale=ones.clone(),
+                com_offset_m=torch.zeros(n_envs, 2, device=self.device),
+                drag=True,
+                ground_effect=True,
+            )
+            self.fresh_thrust_scale = ones.clone()  # prop strength with a full battery
+            self.battery_sag_per_s = torch.zeros(n_envs, device=self.device)
 
     @property
     def obs_size(self) -> int:
@@ -187,7 +209,9 @@ class DroneEnv:
     # ---------- the env loop ----------
 
     def observe(self) -> torch.Tensor:
-        """What the policy sees, (N, obs_size). Columns:
+        """What the policy sees, (N, obs_size), built from the drone's *estimate* of its state (see `sensors`):
+        while the observation is made, `self.state` holds the estimate, so task columns use it too; then the true
+        state is put back. With sensors="ideal" the estimate is the truth. Columns:
 
             0:3    linear velocity, world frame (m/s)
             3:12   rotation matrix R (body -> world), row by row. 9 numbers instead of a quaternion because q and −q
@@ -198,9 +222,14 @@ class DroneEnv:
 
         Raw SI numbers; scaling them to a good range is the job of observation normalization in the learner.
         """
-        rotation = quat_to_matrix(self.state[:, QUAT]).reshape(-1, 9)
-        base = torch.cat((self.state[:, VEL], rotation, self.state[:, OMEGA], self.action), dim=1)
-        return torch.cat((base, self._task_obs()), dim=1)
+        true_state = self.state
+        self.state = self.sensors.estimate(true_state)
+        try:
+            rotation = quat_to_matrix(self.state[:, QUAT]).reshape(-1, 9)
+            base = torch.cat((self.state[:, VEL], rotation, self.state[:, OMEGA], self.action), dim=1)
+            return torch.cat((base, self._task_obs()), dim=1)
+        finally:
+            self.state = true_state
 
     def reset(self, stagger: bool = False) -> torch.Tensor:
         """Start a fresh episode for every drone and return the first observations.
@@ -210,12 +239,13 @@ class DroneEnv:
         step, forever: some rollouts would be full of endings and target jumps and others would have none, and the
         learner would lurch between them (we saw the value loss spike on that beat and the waypoint policy fall apart).
         """
-        self._reset_ids(torch.arange(self.n_envs, device=self.device))
+        everyone = torch.arange(self.n_envs, device=self.device)
+        self._reset_ids(everyone)
         if stagger:
             self.step_count = torch.randint(
                 0, self.max_steps, (self.n_envs,), generator=self.generator, device=self.device
             )
-        return self.observe()
+        return self.sensors.delay_observation(self.observe(), reset_ids=everyone)
 
     def _reset_ids(self, ids: torch.Tensor) -> None:
         """Fresh episode for drones `ids`: zero the counters, motors at hover, then the task places them."""
@@ -227,7 +257,21 @@ class DroneEnv:
         self.prev_action[ids] = 0.0
         self.step_count[ids] = 0
         self.episode_return[ids] = 0.0
+        self.sensors.reset(ids)
+        if self.real_world:
+            self._randomize_drones(ids)
         self._reset_task(ids)
+
+    def _randomize_drones(self, ids: torch.Tensor) -> None:
+        """real_world: a slightly different drone for each new episode (ranges in __init__'s docstring)."""
+        n = len(ids)
+        v = self.variation
+        v.mass_scale[ids] = self.uniform(n, 0.92, 1.08)
+        self.fresh_thrust_scale[ids] = self.uniform(n, 0.92, 1.08)
+        v.thrust_scale[ids] = self.fresh_thrust_scale[ids]
+        v.motor_tau_scale[ids] = self.uniform(n, 0.7, 1.5)
+        v.com_offset_m[ids] = self.uniform(n, -0.003, 0.003, size=2)
+        self.battery_sag_per_s[ids] = self.uniform(n, 0.0, 0.006)  # up to 6 % weaker after 10 s
 
     def physics(self, command: torch.Tensor) -> None:
         """Run SUBSTEPS physics steps with the command held fixed (a zero-order hold: the brain decides at 50 Hz).
@@ -280,7 +324,11 @@ class DroneEnv:
         """
         self.prev_action = self.action
         self.action = action.clamp(-1.0, 1.0)
-        self.physics(self.command(self.action))
+        if self.real_world:  # the battery has been draining since the episode began
+            elapsed_s = self.step_count.float() * POLICY_DT_S
+            self.variation.thrust_scale = self.fresh_thrust_scale * (1.0 - self.battery_sag_per_s * elapsed_s)
+        self.physics(self.command(self.sensors.delay_action(self.action)))  # the radio may deliver it late
+        self.sensors.advance()
         self.step_count += 1
 
         reward = self._reward()
@@ -291,10 +339,11 @@ class DroneEnv:
         self.episode_return += reward
         self._post_step()
 
-        final_obs = self.observe()
-        info = {"terminated": terminated, "truncated": truncated, "final_obs": final_obs, "episodes": {}}
+        obs = self.sensors.delay_observation(self.observe())
+        info = {"terminated": terminated, "truncated": truncated, "final_obs": obs, "episodes": {}}
         ids = done.nonzero(as_tuple=True)[0]
         if len(ids) > 0:
+            info["final_obs"] = obs.clone()
             info["episodes"] = {
                 "return": self.episode_return[ids].clone(),
                 "length_s": self.step_count[ids].float() * POLICY_DT_S,
@@ -302,9 +351,10 @@ class DroneEnv:
                 **self._episode_info(ids),
             }
             self._reset_ids(ids)
-            obs = self.observe()
-        else:
-            obs = final_obs
+            # The reset drones start their new episode's observation history from scratch.
+            fresh = self.observe()
+            obs[ids] = fresh[ids]
+            self.sensors.restart_history(ids, fresh)
         return obs, reward, done, info
 
     def poses(self) -> torch.Tensor:
