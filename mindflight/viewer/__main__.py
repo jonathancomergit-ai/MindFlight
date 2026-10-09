@@ -1,4 +1,7 @@
-"""Start the viewer: `python -m mindflight.viewer --fake --n 64`, then open the printed URL."""
+"""Start the viewer with fake drones: `python -m mindflight.viewer --fake --n 64`, then open the printed URL.
+
+For the real physics use `python -m mindflight.demo --n 64` instead.
+"""
 
 import argparse
 
@@ -17,7 +20,10 @@ def main() -> None:
     args = parser.parse_args()
 
     if not args.fake:
-        parser.error("only --fake works for now; the real simulator is wired in by issue #7")
+        parser.error(
+            "this command only streams the fake grid (add --fake). "
+            "For the real physics run: python -m mindflight.demo --n 64"
+        )
     if args.n < 1:
         parser.error("--n must be at least 1")
 

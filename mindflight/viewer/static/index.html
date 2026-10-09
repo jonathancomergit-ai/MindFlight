@@ -15,6 +15,15 @@
     .status-connected { color: #6fdc8c; }
     .status-connecting { color: #f1c21b; }
     .status-disconnected { color: #ff8389; }
+    #legend { margin-top: 6px; padding-top: 6px; border-top: 1px solid rgba(255, 255, 255, 0.15); }
+    .legend-row { display: flex; align-items: baseline; gap: 6px; }
+    .legend-swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; flex: none; }
+    .legend-expect { color: #9aa4b2; }
+    #reset-row button {
+      font: inherit; color: #e6e6e6; background: rgba(255, 255, 255, 0.12); cursor: pointer;
+      border: 1px solid rgba(255, 255, 255, 0.25); border-radius: 4px; padding: 1px 8px;
+    }
+    #reset-row button:hover { background: rgba(255, 255, 255, 0.22); }
   </style>
   <!-- Three.js from a pinned CDN version. No npm, no build step. -->
   <script type="importmap">
@@ -32,6 +41,9 @@
     <div>render <b id="hud-render-fps">0</b> fps · stream <b id="hud-stream-fps">0</b> frames/s</div>
     <div>server <b id="hud-status" class="status-connecting">connecting</b></div>
     <label><input type="checkbox" id="size-toggle"> size ×10</label>
+    <!-- Filled in from /config when the server sends drone groups (python -m mindflight.demo). -->
+    <div id="legend" hidden></div>
+    <div id="reset-row" hidden><button id="reset-button" type="button">restart (R)</button> <span id="loop-note"></span></div>
   </div>
   <script type="module" src="/static/main.js"></script>
 </body>
