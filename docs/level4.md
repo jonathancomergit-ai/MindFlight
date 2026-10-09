@@ -9,7 +9,7 @@ pillars are. It only has a fake lidar: 48 distance sensors in a ring.
 crossing (≈ 2 m/s).
 
 ```
-python -m mindflight.play --policy policies/obstacles.pt      # 9 drones, each in its own pillar field
+python -m mindflight.play --policy policies/obstacles.pt      # 4 drones, each in its own pillar field
 python -m mindflight.train --task obstacles --view
 python -m mindflight.evaluate policies/obstacles.pt
 ```

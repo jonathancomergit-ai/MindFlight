@@ -211,7 +211,7 @@ const sceneGroup = new THREE.Group();
 scene.add(sceneGroup);
 const GATE_COLORS = { next: new THREE.Color(0x6fdc8c), later: new THREE.Color(0xff9f43), done: new THREE.Color(0x4a5260) };
 const GATE_BAR_M = 0.04; // drawn frame thickness
-const PILLAR_HEIGHT_M = 4.0;
+const PILLAR_HEIGHT_M = 3.0; // the obstacle arena's ceiling
 
 function clearScene() {
   for (const child of [...sceneGroup.children]) {
@@ -274,7 +274,8 @@ function showScene(message) {
         return pillar;
       }),
     );
-    sceneGroup.add(new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({ color: 0x8a94a3, roughness: 0.8 })));
+    const pillarMaterial = new THREE.MeshStandardMaterial({ color: 0x8a94a3, roughness: 0.8, transparent: true, opacity: 0.6 });
+    sceneGroup.add(new THREE.Mesh(geometry, pillarMaterial));
     for (const [x, y] of message.pillars) points.push([x, y]);
   }
   fitView(points);

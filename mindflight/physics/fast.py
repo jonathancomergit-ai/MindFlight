@@ -44,15 +44,11 @@ import warnings
 
 import torch
 
-from mindflight.physics.aero import DroneVariation
 from mindflight.physics.dynamics import PHYSICS_DT_S, STATE_SIZE, make_state, step
 from mindflight.physics.params import CRAZYFLIE, CrazyflieParams
 
 POLICY_SUBSTEPS = 10  # physics steps per policy action: 500 Hz physics / 50 Hz policy (PLAN.md -> Timing)
 WARMUP_RUNS = 3  # eager runs on a side stream before capture, as the PyTorch CUDA graph docs ask
-
-
-VARIATION_TENSORS = ("mass_scale", "thrust_scale", "motor_tau_scale", "wind_mps")  # DroneVariation's tensor fields
 
 
 class CudaGraphStepper:
@@ -87,11 +83,7 @@ class CudaGraphStepper:
         dt: float = PHYSICS_DT_S,
         params: CrazyflieParams = CRAZYFLIE,
         compile: bool = False,
-        variation: DroneVariation | None = None,
     ):
-        """variation (Level 5): a template saying which per-drone extras the physics uses. Its flags (drag,
-        ground_effect) are fixed when the graph is recorded; its tensors get static buffers, and `run` copies new
-        values into them each call (so wind and mass can change every step without re-recording)."""
         if device is None:
             device = "cuda" if torch.cuda.is_available() else "cpu"
         self.n = n
@@ -103,22 +95,13 @@ class CudaGraphStepper:
         self.compiled = compile and self.uses_cuda_graph
         self.step_fn = torch.compile(step, dynamic=False) if self.compiled else step
         self.graph = None
-        self.variation = variation
-        self.static_variation = None
-        if variation is not None:
-            # Buffers for the variation's tensors (or None where the template has None). Same values as given.
-            fields = {}
-            for name in VARIATION_TENSORS:
-                value = getattr(variation, name)
-                fields[name] = None if value is None else value.to(self.device).clone()
-            self.static_variation = DroneVariation(**fields, drag=variation.drag, ground_effect=variation.ground_effect)
         if self.uses_cuda_graph:
             self._capture()
 
     def _advance(self, state: torch.Tensor, rpm_cmd: torch.Tensor) -> torch.Tensor:
         """`substeps` physics steps with the same command. This is what the graph records."""
         for _ in range(self.substeps):
-            state = self.step_fn(state, rpm_cmd, self.dt, self.params, self.static_variation)
+            state = self.step_fn(state, rpm_cmd, self.dt, self.params)
         return state
 
     def _warm_up(self) -> None:
@@ -154,13 +137,7 @@ class CudaGraphStepper:
             self.static_output = self._advance(self.static_state, self.static_rpm_cmd)
 
     @torch.no_grad()  # the simulator never needs gradients, and a graph can't record autograd anyway
-    def run(
-        self,
-        state: torch.Tensor,
-        rpm_cmd: torch.Tensor,
-        copy_output: bool = True,
-        variation: DroneVariation | None = None,
-    ) -> torch.Tensor:
+    def run(self, state: torch.Tensor, rpm_cmd: torch.Tensor, copy_output: bool = True) -> torch.Tensor:
         """Advance every drone by `substeps` physics steps and return the new (N, 17) state.
 
         state: (N, 17) float32, the layout in `dynamics.py`. rpm_cmd: (N, 4) commanded RPM, held for all substeps.
@@ -176,11 +153,6 @@ class CudaGraphStepper:
                 f"stepper is built for N = {self.n}: expected state ({self.n}, {STATE_SIZE}) and rpm_cmd ({self.n}, 4), "
                 f"got {tuple(state.shape)} and {tuple(rpm_cmd.shape)}"
             )
-        if variation is not None:  # new per-drone values for the variation's buffers
-            for name in VARIATION_TENSORS:
-                value, buffer = getattr(variation, name), getattr(self.static_variation, name)
-                if value is not None:
-                    buffer.copy_(value)
         if not self.uses_cuda_graph:
             return self._advance(state, rpm_cmd)
 

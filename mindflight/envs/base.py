@@ -31,7 +31,6 @@ import math
 
 import torch
 
-from mindflight.physics.aero import DroneVariation
 from mindflight.physics.dynamics import OMEGA, PHYSICS_DT_S, POS, QUAT, RPM, STATE_SIZE, VEL, step
 from mindflight.physics.fast import CudaGraphStepper
 from mindflight.physics.params import CRAZYFLIE
@@ -95,8 +94,6 @@ class DroneEnv:
         # Running totals for the episode each drone is in, reported when it ends.
         self.episode_return = torch.zeros(n_envs, device=self.device)
         self.stepper: CudaGraphStepper | None = None  # built on first use (recording takes a few seconds)
-        # Level 5: per-drone mass/thrust/motor lag, wind, drag, ground effect (physics/aero.py). None = standard.
-        self.variation: DroneVariation | None = None
 
     @property
     def obs_size(self) -> int:
@@ -209,14 +206,12 @@ class DroneEnv:
         controller that updates its motor outputs at 50 Hz)."""
         if self.fast_physics and self.device.type == "cuda":
             if self.stepper is None:
-                self.stepper = CudaGraphStepper(
-                    self.n_envs, self.device, substeps=SUBSTEPS, compile=True, variation=self.variation
-                )
-            self.state = self.stepper.run(self.state, rpm_cmd, variation=self.variation)
+                self.stepper = CudaGraphStepper(self.n_envs, self.device, substeps=SUBSTEPS, compile=True)
+            self.state = self.stepper.run(self.state, rpm_cmd)
             return
         state = self.state
         for _ in range(SUBSTEPS):
-            state = step(state, rpm_cmd, variation=self.variation)
+            state = step(state, rpm_cmd)
         self.state = state
 
     def step(self, action: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, dict]:
