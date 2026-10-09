@@ -71,6 +71,24 @@ laps fell steadily (3.68 s → 3.37 s) while the finish rate stayed between 92 a
 are the fastest of all, and that is the point of the "finished laps only" rule: an average that ignored crashes
 would crown it.
 
+## One more experiment: downwash
+
+`python -m mindflight.race --downwash` turns on the last physics upgrade from the plan: a drone flying above
+another pushes it down with its prop wash (`physics/aero.py -> downwash_world`, the empirical model from
+gym-pybullet-drones, capped at one drone-weight because the raw formula reaches 28 × the weight at 10 cm).
+
+Every drone was trained alone in its own world, so none of them has ever felt another drone's air. 30 rounds:
+
+| Policy | Without downwash (100 rounds) | With downwash (30 rounds) |
+|---|---|---|
+| racer | 96 % of drones finish | 27 % finish (16 of 60) |
+| gates | 94 % finish | 32 % finish (19 of 60) |
+
+Six drones squeezing through the same 0.5 m gate fly straight through each other's wash, and the brains have
+no idea what is pushing them. This is Level 5's lesson from the other side: **a policy only copes with what it
+was trained on.** The fix would be to train the racers in shared worlds with downwash on (groups of drones per
+course), which is the natural next step after this project.
+
 ## Putting it together
 
 | Level | What it added | Policy file |

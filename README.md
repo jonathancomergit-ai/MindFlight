@@ -20,7 +20,7 @@ All seven levels are done. Each score is from 1,000 fixed test flights with the 
 | 1 Hover | holds 1 m for 10 s from random starts | 100.0 %, 0 crashes |
 | 2 Fly to a point | ≥ 95 % of targets reached within 10 cm, settled | 99.3 % |
 | 3 Gates | ≥ 90 % finish 6 gates in order | 95.8 %, 3.7 s laps |
-| 4 Obstacles | ≥ 90 % cross the densest pillar field by lidar | 98.3 % |
+| 4 Obstacles | ≥ 90 % cross the densest pillar field by lidar | 100.0 % (99.6 % on 2,000 more) |
 | 5 Sturdy | survives gusts and ±20 % mass; beats the non-randomized policy | 97.4 % vs 84.6 % (77.8 % vs 56.0 % in 2× wind) |
 | 6 Race | ≥ 3 policies race live with a leaderboard | racer won 96 of 100 rounds (3.36 s laps vs 3.68 s) |
 
