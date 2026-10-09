@@ -5,8 +5,8 @@ pillars are. It only has a fake lidar: 48 distance sensors in a ring.
 
 **Done when:** at least 90 % of flights reach the goal without touching a pillar, in the densest fields.
 
-**Result:** **98.3 %** of 1,000 densest fields crossed (97.8 % on 2,000 more), 1.7 % crashes, about 3.6 s per
-crossing (≈ 2 m/s).
+**Result:** **100.0 %** of 1,000 densest fields crossed (99.6 % on 2,000 more), about 3.6 s per crossing
+(≈ 2 m/s). It passed the 90 % mark at 98.3 % after ~350 iterations; the shipped policy trained on to 3,000.
 
 ```
 python -m mindflight.play --policy policies/obstacles.pt      # 4 drones, each in its own pillar field
