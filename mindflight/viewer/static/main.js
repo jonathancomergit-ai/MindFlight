@@ -280,21 +280,25 @@ function showScene(message) {
   fitView(points);
 }
 
-// The first time we learn how big the world is, grow the floor grid and pull the camera back to see it all.
+// The first time we learn how big the world is, grow the floor grid and point the camera at the middle of it.
 let viewFitted = false;
 function fitView(points) {
   if (viewFitted || points.length === 0) return;
   viewFitted = true;
-  let reach = 0;
-  for (const [x, y] of points) reach = Math.max(reach, Math.abs(x), Math.abs(y));
+  const xs = points.map((p) => p[0]);
+  const ys = points.map((p) => p[1]);
+  const [minX, maxX, minY, maxY] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];
+  const centreX = (minX + maxX) / 2;
+  const centreY = (minY + maxY) / 2;
+  const extent = Math.max(maxX - minX, maxY - minY, 4); // metres the camera has to take in
+  const reach = Math.max(Math.abs(minX), Math.abs(maxX), Math.abs(minY), Math.abs(maxY));
   const size = 2 * Math.ceil(reach + 2);
-  if (size > gridSizeM) {
-    grid.scale.setScalar(size / gridSizeM);
-    camera.position.set(-size * 0.45, -size * 0.35, size * 0.3);
-    camera.far = Math.max(camera.far, size * 4);
-    camera.updateProjectionMatrix();
-    controls.update();
-  }
+  if (size > gridSizeM) grid.scale.setScalar(size / gridSizeM);
+  controls.target.set(centreX, centreY, 1);
+  camera.position.set(centreX - extent * 0.55, centreY - extent * 0.45, extent * 0.45 + 1);
+  camera.far = Math.max(camera.far, size * 4);
+  camera.updateProjectionMatrix();
+  controls.update();
 }
 
 // ---------- info lines, charts and the leaderboard (text messages) ----------

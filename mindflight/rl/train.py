@@ -109,12 +109,14 @@ def train(
     env_kwargs: dict | None = None,
     run_dir: Path | None = None,
     init_checkpoint: str | Path | None = None,
+    reset_std: float | None = None,
     eval_every: int = 50,
     on_iteration: Callable[[DroneEnv, dict, ActorCritic], None] | None = None,
     on_start: Callable[[PPO], None] | None = None,
     log: Callable[[str], None] = print,
 ) -> Path:
-    """Train a policy for `task`. Returns the run folder, which holds metrics.jsonl, latest.pt and best.pt.
+    """Train a policy for `task`. Returns the run folder, which holds metrics.jsonl, latest.pt, best.pt and a
+    snapshots/ folder with the policy at every evaluation (handy for racing a policy against its younger self).
 
     on_start(ppo) is called once the learner exists; on_iteration(env, metrics, model) after every iteration (the
     live viewer uses both).
@@ -130,6 +132,9 @@ def train(
     if init_checkpoint is not None:
         model, _ = load_policy(init_checkpoint, device)
         ppo.model.load_state_dict(model.state_dict())
+        if reset_std is not None:  # explore again: a finished policy's spread has usually shrunk to almost nothing
+            with torch.no_grad():
+                ppo.model.log_std.fill_(float(torch.log(torch.tensor(reset_std))))
     # Evaluation always uses the task's hardest setting, so the score means the same thing all through training.
     eval_kwargs = dict(env_kwargs)
     if getattr(env, "has_curriculum", False):
@@ -147,7 +152,7 @@ def train(
     log(f"run folder: {run_dir}   task {task}, {n_envs} drones on {device}, obs {env.obs_size}")
 
     buffer = RolloutBuffer(config.rollout_steps, n_envs, env.obs_size, env.action_size, device)
-    obs = env.reset()
+    obs = env.reset(stagger=True)
     samples = 0
     best_success = -1.0
     start_s = time.perf_counter()
@@ -200,6 +205,7 @@ def train(
             success = metrics.get("eval_success", 0.0)
             extra = {"eval": {k: v for k, v in metrics.items() if k.startswith("eval_")}}
             save_checkpoint(run_dir / "latest.pt", ppo, task, env_kwargs, iteration, extra)
+            save_checkpoint(run_dir / "snapshots" / f"it{iteration:05d}.pt", ppo, task, env_kwargs, iteration, extra)
             if success >= best_success:
                 best_success = success
                 save_checkpoint(run_dir / "best.pt", ppo, task, env_kwargs, iteration, extra)

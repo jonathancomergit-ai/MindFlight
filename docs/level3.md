@@ -4,7 +4,8 @@
 
 **Done when:** at least 90 % of flights finish all 6 gates on the hardest courses.
 
-**Result:** RESULT_LINE
+**Result:** **95.8 %** of 1,000 hardest courses finished (95.3 % on 2,000 more), average lap **3.7 s** for about
+12 m of course: a little over 3 m/s, through 0.5 m gates.
 
 ```
 python -m mindflight.play --policy policies/gates.pt          # 8 drones fly the same course; a new one every 20 s
@@ -81,7 +82,23 @@ if smoothed success > 80 %:  difficulty += 0.05   (up to 1)
 
 ![Gates learning curves](img/level3_curves.png)
 
-CURRICULUM_FINDINGS
+What the chart shows:
+
+- **Test success on the hardest courses stays at 0 %** for the first 65 million samples, while training success
+  sits at 70–90 %. The drone was getting good, just on easier courses. Without a curriculum, this is the whole
+  story: 0 %, with nothing to learn from.
+- Difficulty climbs in steps of 0.05 every time the smoothed success passes 80 %. Harder steps take longer.
+- Once difficulty reaches about 0.9, the test score jumps to 92–96 %.
+- The two sharp dips (at 30 M and 60 M samples) are restarts: training moved to the faster GPU physics, and then
+  the crash penalty went up (below). A restart keeps the networks but starts a fresh optimizer with every drone
+  starting at once, and the second one also changed the reward, so the value network's guesses were off for a
+  while. Things wobble, then settle.
+
+### What we got wrong first
+
+The first reward paid +10 per metre of progress but only −5 for a crash. Over a 12 m course a drone banks ~120
+progress points, so a crash near the end barely hurt. It flew flat out and crashed 25 % of the time. Raising the
+crash cost to **−30** cut that to 4–6 %. Rule of thumb: **a crash must cost more than the progress it can bank.**
 
 ## Tests
 

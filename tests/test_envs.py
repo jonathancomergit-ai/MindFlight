@@ -273,3 +273,12 @@ def test_sturdy_randomizes_drones_and_wind_and_gusts_move():
     calm.reset()
     calm.step(torch.zeros(8, 4))
     assert torch.all(calm.variation.mass_scale == 1) and torch.all(calm.variation.wind_mps == 0)
+
+
+def test_staggered_reset_spreads_episode_clocks():
+    env = HoverEnv(512, device="cpu", seed=1)
+    env.reset(stagger=True)
+    assert env.step_count.min() >= 0 and env.step_count.max() < env.max_steps
+    assert env.step_count.float().std() > env.max_steps / 4  # spread out, not all at 0
+    env.reset()
+    assert env.step_count.max() == 0  # evaluation: everyone starts fresh

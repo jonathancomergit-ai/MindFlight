@@ -7,17 +7,19 @@ The arena (seen from above, x forward):
 
 The pillars are vertical cylinders, floor to ceiling, radius 8–20 cm, on a jittered grid (4 columns × 5 rows, each
 moved up to 15 cm at random). That grid keeps a gap of at least about 30 cm somewhere in every row, so a path always
-exists. The drone does **not** get the pillar positions. It only gets 16 lidar distances (see `sensors.py`), like a
+exists. The drone does **not** get the pillar positions. It only gets 48 lidar distances (see `sensors.py`), like a
 real robot. Touching a pillar (its centre closer than radius + 6 cm, the Crazyflie's size) is a crash.
 
-Observation (task part, 19 numbers):
+Observation (task part, 51 numbers):
     0:3    goal − position (m, world)
-    3:19   lidar: 16 rays around the drone's heading, each as closeness = 1 − distance / 3 m (0 = nothing in range,
+    3:51   lidar: 48 rays around the drone's heading, each as closeness = 1 − distance / 3 m (0 = nothing in range,
            1 = touching). Closeness rather than distance so that "nothing there" is a calm 0.
 
 Reward, per policy step:
-    10 · (metres closer to the goal than last step) − small spin and twitch terms
-    reaching the goal (within 20 cm): +20 and the episode ends. Crash: −5 and the episode ends.
+    10 · (metres closer to the goal than last step, counted up to 2 m/s) − small spin and twitch terms
+    (Without the 2 m/s cap it learned to blast across at ~6 m/s and hit a pillar 40 % of the time: going faster
+    always paid more. With the cap, extra speed earns nothing, so looking where it's going is worth it.)
+    reaching the goal (within 20 cm): +20 and the episode ends. Crash: −30 and the episode ends.
 
 Curriculum: each grid spot holds a pillar with probability 0.3 + 0.6 · difficulty, so the field fills up from 6 to
 18 pillars on average as the success rate climbs past 80 %.
@@ -32,7 +34,9 @@ from mindflight.envs.sensors import ray_circle_distance, ray_directions, ray_wal
 from mindflight.physics.dynamics import OMEGA, POS, QUAT, VEL
 from mindflight.physics.rotations import quat_to_matrix
 
-N_RAYS = 16
+# 48 rays, 7.5° apart: at 1.2 m the gap between neighbouring rays is 16 cm, the thinnest pillar's width. We started
+# with 16 rays (22.5°, a 39 cm gap at 1 m) and most crashes were into pillars that slipped between the rays.
+N_RAYS = 48
 LIDAR_RANGE_M = 3.0
 WALL_Y_M = 3.0
 CEILING_M = 3.0
@@ -44,7 +48,8 @@ COLUMNS_X_M = (-1.8, -0.6, 0.6, 1.8)
 ROWS_Y_M = (-2.0, -1.0, 0.0, 1.0, 2.0)
 JITTER_M = 0.15
 RADIUS_RANGE_M = (0.08, 0.20)
-CRASH_PENALTY = 5.0
+MAX_PAID_SPEED_MPS = 2.0  # progress faster than this earns nothing extra
+CRASH_PENALTY = 30.0  # big enough that crashing late still costs more than the progress it banked
 GOAL_BONUS = 20.0
 
 
@@ -136,6 +141,7 @@ class ObstaclesEnv(DroneEnv):
     def _reward(self) -> torch.Tensor:
         self.lidar_m = self.scan()
         progress = (self.goal - self.prev_pos).norm(dim=1) - self.goal_distance()
+        progress = progress.clamp(max=MAX_PAID_SPEED_MPS * 0.02)  # metres per policy step
         spin = (self.state[:, OMEGA] ** 2).sum(dim=1)
         twitch = ((self.action - self.prev_action) ** 2).sum(dim=1)
         reward = 10.0 * progress - 0.01 * spin - 0.05 * twitch

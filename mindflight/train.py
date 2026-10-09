@@ -19,6 +19,7 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", default=None, help="cuda or cpu (default: cuda if available)")
     parser.add_argument("--init", default=None, help="start from this checkpoint instead of from scratch")
+    parser.add_argument("--reset-std", type=float, default=None, help="with --init: reset the action spread to this")
     parser.add_argument("--run-dir", default=None, help="where to write the run (default runs/<task>/<date-time>)")
     parser.add_argument("--eval-every", type=int, default=50)
     parser.add_argument("--view", action="store_true", help="watch it learn live in the viewer")
@@ -72,6 +73,7 @@ def main() -> None:
         env_kwargs=env_kwargs,
         run_dir=Path(args.run_dir) if args.run_dir else None,
         init_checkpoint=args.init,
+        reset_std=args.reset_std,
         eval_every=args.eval_every,
         on_start=start_view if args.view else None,
         on_iteration=update_view if args.view else None,

@@ -16,7 +16,7 @@ Reward, per policy step:
     reward = 10 · (how many metres closer to the next gate's centre than last step)
            + 10 for each gate passed, + 10 more for the last one
            − small spin and twitch terms (no tilt penalty: a racing drone has to lean to speed up)
-    crash: −5, and the episode ends
+    crash: −30, and the episode ends (it has to outweigh the progress points banked before the crash)
 
 **Curriculum learning.** Starting straight on the hardest course is like learning to read with a novel: nearly
 every try fails, so there is almost nothing to learn from. Instead `difficulty` starts at 0 (big 1 m gates in a
@@ -34,7 +34,7 @@ from mindflight.physics.dynamics import OMEGA, POS, QUAT, VEL
 N_GATES = 6
 DRONE_MARGIN_M = 0.06  # the Crazyflie's collision radius (params.collision_radius_m)
 FRAME_WIDTH_M = 0.10
-CRASH_PENALTY = 5.0
+CRASH_PENALTY = 30.0  # big enough that crashing late still costs more than the progress it banked
 PASS_BONUS = 10.0
 START_HEIGHT_M = 1.0
 

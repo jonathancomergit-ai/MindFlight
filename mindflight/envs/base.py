@@ -178,9 +178,19 @@ class DroneEnv:
         base = torch.cat((self.state[:, VEL], rotation, self.state[:, OMEGA], self.action), dim=1)
         return torch.cat((base, self._task_obs()), dim=1)
 
-    def reset(self) -> torch.Tensor:
-        """Start a fresh episode for every drone and return the first observations."""
+    def reset(self, stagger: bool = False) -> torch.Tensor:
+        """Start a fresh episode for every drone and return the first observations.
+
+        stagger=True (training): each drone starts at a random point of its time limit, as if it had already been
+        flying a while. Otherwise all 4,096 drones would time out on the same step, and get new targets on the same
+        step, forever: some rollouts would be full of endings and target jumps and others would have none, and the
+        learner would lurch between them (we saw the value loss spike on that beat and the waypoint policy fall apart).
+        """
         self._reset_ids(torch.arange(self.n_envs, device=self.device))
+        if stagger:
+            self.step_count = torch.randint(
+                0, self.max_steps, (self.n_envs,), generator=self.generator, device=self.device
+            )
         return self.observe()
 
     def _reset_ids(self, ids: torch.Tensor) -> None:
