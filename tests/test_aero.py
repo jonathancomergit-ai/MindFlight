@@ -135,3 +135,10 @@ def test_downwash_is_capped_at_one_drone_weight():
     pos = torch.tensor([[0.0, 0.0, 1.0], [0.0, 0.0, 1.05]])  # 5 cm apart, straight above
     force = downwash_world(pos, torch.tensor([0, 0]))
     assert -force[0, 2].item() == pytest.approx(CRAZYFLIE.weight_n)
+
+
+def test_heavy_nose_pitches_nose_down():
+    variation = DroneVariation(com_offset_m=torch.tensor([[0.003, 0.0]]))  # centre of mass 3 mm forward
+    state = fly(variation, seconds=0.2)
+    assert state[0, 11] > 0  # positive pitch rate = nose down (FLU: rotation about +y)
+    assert abs(state[0, 10].item()) < 1e-6  # no roll

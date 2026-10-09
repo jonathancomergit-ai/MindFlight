@@ -159,6 +159,14 @@ def step(
         if variation.thrust_scale is not None:
             thrust_body_n = thrust_body_n * variation.thrust_scale[:, None]
             torque_body_nm = torque_body_nm * variation.thrust_scale[:, None]
+        if variation.com_offset_m is not None:  # off-centre centre of mass: thrust twists the drone
+            total_thrust = thrust_body_n[:, 2]
+            offset_torque = torch.stack(
+                (-variation.com_offset_m[:, 1] * total_thrust, variation.com_offset_m[:, 0] * total_thrust,
+                 torch.zeros_like(total_thrust)),
+                dim=1,
+            )
+            torque_body_nm = torque_body_nm + offset_torque
         if variation.mass_scale is not None:
             mass_kg = params.mass_kg * variation.mass_scale[:, None]  # (N, 1)
             inertia_kgm2 = inertia_kgm2 * variation.mass_scale[:, None]  # (N, 3): same shape, heavier

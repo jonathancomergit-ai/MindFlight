@@ -62,11 +62,13 @@ GAINS = ControllerGains()
 def attitude_action_to_setpoint(action: torch.Tensor, params: CrazyflieParams = CRAZYFLIE) -> torch.Tensor:
     """Brain action (N, 4) in [−1, 1] -> setpoint (N, 4): thrust (N), roll (rad), pitch (rad), yaw rate (rad/s).
 
-        thrust = weight · (1 + 1.25 · a0), clamped to [0, max thrust]
+        thrust = weight · (1 + 1.25 · a0), clamped to [0, the most the radio can command]
+                 (the firmware's top thrust command is 60000 of 65535: about 1.66 × weight for the Crazyflie,
+                 less than the motors' 2.25 ×, so a brain must not learn to count on more)
         roll = 30° · a1,   pitch = 30° · a2,   yaw rate = 180°/s · a3
     """
     a = action.clamp(-1.0, 1.0)
-    max_thrust_n = params.thrust_to_weight * params.weight_n
+    max_thrust_n = min(params.thrust_to_weight * params.weight_n, params.max_command_thrust_n)
     thrust = (params.weight_n * (1.0 + THRUST_SPAN * a[:, 0])).clamp(0.0, max_thrust_n)
     return torch.stack((thrust, MAX_TILT_RAD * a[:, 1], MAX_TILT_RAD * a[:, 2], MAX_YAW_RATE_RADPS * a[:, 3]), dim=1)
 
