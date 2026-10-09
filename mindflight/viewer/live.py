@@ -7,7 +7,6 @@ iteration the newest weights are copied in. Charts in the corner show the learni
 import copy
 import threading
 
-import torch
 import uvicorn
 
 from mindflight.envs.base import DroneEnv
