@@ -145,14 +145,17 @@ def create_app(
     def index() -> FileResponse:
         return FileResponse(STATIC_DIR / "index.html")
 
+    # Draw the drone the source flies (a PolicySource's env knows it), else the default Crazyflie.
+    drone = getattr(getattr(source, "env", None), "params", CRAZYFLIE)
+
     @app.get("/config")
     def config() -> dict:
         """Numbers the page needs to draw a drone at real scale, from physics/params.py."""
         return {
             "n_drones": source.n_drones,
             "frame_rate_hz": FRAME_RATE_HZ,
-            "arm_m": CRAZYFLIE.arm_m,
-            "prop_radius_m": CRAZYFLIE.prop_radius_m,
+            "arm_m": drone.arm_m,
+            "prop_radius_m": drone.prop_radius_m,
             "resettable": on_reset is not None,
             **(extra_config or {}),
         }

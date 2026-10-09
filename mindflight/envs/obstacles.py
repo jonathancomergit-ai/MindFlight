@@ -68,8 +68,9 @@ class ObstaclesEnv(DroneEnv):
         seed: int = 0,
         difficulty: float | None = None,
         start_difficulty: float = 0.0,
+        **options,
     ):
-        super().__init__(n_envs, episode_s, device, seed)
+        super().__init__(n_envs, episode_s, device, seed, **options)
         self.fixed_difficulty = difficulty is not None
         # start_difficulty: where the curriculum starts (for carrying on from an earlier run's policy).
         self.difficulty = float(start_difficulty) if difficulty is None else float(difficulty)
