@@ -5,7 +5,7 @@ import torch
 
 from mindflight.physics.dynamics import OMEGA, POS, QUAT, RPM, VEL, make_state, step
 from mindflight.physics.params import CRAZYFLIE, GRAVITY_MPS2
-from mindflight.physics.rotations import quat_normalize
+from mindflight.physics.rotations import quat_normalize, quat_rotate
 
 DT_S = 0.002  # physics step from PLAN.md (500 Hz)
 HOVER_RPM = CRAZYFLIE.hover_rpm
@@ -29,10 +29,34 @@ def test_free_fall(device):
     state = make_state(1, device, pos=[0.0, 0.0, 10.0])
     state = run(state, torch.zeros(1, 4, device=device), seconds=1.0)
     fallen_m = 0.5 * GRAVITY_MPS2 * 1.0**2  # z = z0 − ½ g t² = 10 − 4.905
-    assert math.isclose(state[0, 2].item(), 10.0 - fallen_m, rel_tol=0.01)
+    # Gravity is constant, so p ← p + v·dt + ½·a·dt² should land within 1 mm (only float32 rounding).
+    assert abs(state[0, 2].item() - (10.0 - fallen_m)) < 1e-3
     assert math.isclose(state[0, VEL][2].item(), -GRAVITY_MPS2, rel_tol=0.01)  # vz = −g t
     assert torch.allclose(state[0, :2], torch.zeros(2, device=device))  # straight down, no drift
     assert torch.allclose(state[0, OMEGA], torch.zeros(3, device=device))
+
+
+def test_tumble_conserves_angular_momentum_and_energy():
+    # Motors off, high up, tumbling about all three axes. With no torque, the world angular momentum
+    # L = R · (I ω) and the rotational energy ½ ωᵀ I ω must both stay constant.
+    inertia_kgm2 = torch.tensor([CRAZYFLIE.ixx_kgm2, CRAZYFLIE.iyy_kgm2, CRAZYFLIE.izz_kgm2])
+
+    def momentum_and_energy(state):
+        body_momentum = inertia_kgm2 * state[:, OMEGA]
+        world_momentum = quat_rotate(state[:, QUAT], body_momentum)[0].double()
+        energy_j = 0.5 * (state[0, OMEGA] * body_momentum[0]).sum().double()
+        return world_momentum, energy_j
+
+    state = make_state(1, "cpu", pos=[0.0, 0.0, 1000.0])
+    state[:, OMEGA] = torch.tensor([20.0, 5.0, 30.0])
+    momentum_start, energy_start = momentum_and_energy(state)
+    state = run(state, torch.zeros(1, 4), seconds=2.0)
+    momentum_end, energy_end = momentum_and_energy(state)
+
+    momentum_drift = ((momentum_end - momentum_start).norm() / momentum_start.norm()).item()
+    energy_drift = abs((energy_end - energy_start) / energy_start).item()
+    assert momentum_drift < 1e-3
+    assert energy_drift < 1e-3
 
 
 @pytest.mark.parametrize("device", DEVICES)
