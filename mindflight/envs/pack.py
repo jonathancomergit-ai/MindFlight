@@ -57,6 +57,7 @@ packs. Also reported: "collided" (this drone ended in a collision), "pack_collid
 "downwash_time" (share of steps it was pushed down by more than 5 % of its weight).
 """
 
+import itertools
 import math
 
 import torch
@@ -192,14 +193,31 @@ class PackEnv(HoverEnv):
         start: str = "ordered",
         downwash: bool = True,
         action_mode: str = "attitude",
+        crowding_weight: float | None = None,
+        collision_penalty: float = CRASH_PENALTY,
+        assignment: str = "best",
         **options,
     ):
+        # assignment: "best" = every time the formation changes, each drone gets the slot that makes the pack's
+        # total squared travel smallest (see `assign_slots`); "fixed" = drone k always takes slot k.
+        if assignment not in ("best", "fixed"):
+            raise ValueError(f"assignment must be 'best' or 'fixed', not {assignment!r}")
+        self.assignment = assignment
+        # crowding_weight: how much being too close to a pack-mate costs (default: the class value, 1).
+        # collision_penalty: what hitting a pack-mate costs (other crashes always cost CRASH_PENALTY).
+        if crowding_weight is not None:
+            self.crowding_weight = float(crowding_weight)
+        self.collision_penalty = float(collision_penalty)
         group_size = int(group_size)  # the command line may hand us 6.0
         if group_size < 2:
             raise ValueError(f"group_size must be at least 2, not {group_size}")
         n_envs = -(-n_envs // group_size) * group_size  # round up to whole worlds: 4096 -> 4098, 1000 -> 1002
         self.group_size = group_size
         self.n_worlds = n_envs // group_size
+        # Every way of handing out G slots, for assign_slots: (G!, G). 6 drones -> 720 rows. Beyond 8 it gets large.
+        if group_size > 8:
+            raise ValueError("assignment='best' tries every ordering; keep group_size <= 8")
+        permutation_list = list(itertools.permutations(range(group_size)))
         self.neighbours = min(NEIGHBOURS, group_size - 1) if neighbours is None else int(neighbours)
         if not 1 <= self.neighbours <= group_size - 1:
             raise ValueError(f"neighbours must be between 1 and group_size − 1 = {group_size - 1}")
@@ -207,6 +225,7 @@ class PackEnv(HoverEnv):
         self.task_obs_size = 3 + 6 * self.neighbours + 1 + (3 * self.neighbours if self.share_goals else 0)
         options.setdefault("success_radius_m", SUCCESS_RADIUS_M)
         super().__init__(n_envs, episode_s, device, seed, action_mode=action_mode, **options)
+        self.permutations = torch.tensor(permutation_list, device=self.device)  # (G!, G)
 
         self.spacing_m = float(spacing_m)
         self.max_turn_rad = math.radians(float(max_turn_deg))
@@ -262,6 +281,23 @@ class PackEnv(HoverEnv):
             dim=-1,
         )
         return self.centre[worlds, None, :] + turned
+
+    def assign_slots(self, worlds: torch.Tensor, slots: torch.Tensor) -> torch.Tensor:
+        """Which drone flies to which slot: (w, G, 3) slot positions -> (w, G, 3) one target per drone.
+
+        "best": try every way of handing out the G slots (6 drones: 6! = 720 ways, all at once on the GPU) and keep
+        the one with the smallest total *squared* distance  Σ |slot − drone|².  Squared matters: with it, straight
+        paths to the chosen slots never cross (if two paths crossed, swapping those two slots would make the sum
+        smaller, so the best assignment can't have a crossing). Real drone swarms use the same trick.
+        "fixed": drone k gets slot k."""
+        if self.assignment == "fixed":
+            return slots
+        positions = self.per_world(self.state[:, POS])[worlds]  # (w, G, 3)
+        squared = ((positions[:, :, None, :] - slots[:, None, :, :]) ** 2).sum(-1)  # (w, drone, slot)
+        drones = torch.arange(self.group_size, device=self.device)
+        cost = squared[:, drones[None, :], self.permutations].sum(-1)  # (w, ways)
+        best = self.permutations[cost.argmin(dim=1)]  # (w, G): drone k -> slot best[k]
+        return slots.gather(1, best[..., None].expand(-1, -1, 3))
 
     def next_centres(self, worlds: torch.Tensor) -> torch.Tensor:
         """The next formation centre for `worlds`, (w, 3): 0.5–2 m from the last one in a random direction, then
@@ -352,7 +388,7 @@ class PackEnv(HoverEnv):
         self.state[ids, OMEGA] = self.uniform(n, -0.5, 0.5, size=3)
         self.prev_pos[ids] = start
 
-        self.target[ids] = self.slot_positions(worlds).reshape(n, 3)
+        self.target[ids] = self.assign_slots(worlds, self.slot_positions(worlds)).reshape(n, 3)
         self.close_steps[ids] = 0
         self.waypoints_reached[worlds] = 0.0
         self.downwash_steps[ids] = 0.0
@@ -407,7 +443,9 @@ class PackEnv(HoverEnv):
             - 0.1 * twitch
             - self.crowding_weight * self.crowding()
         )
-        return torch.where(self._crashed(), reward - CRASH_PENALTY, reward)
+        reward = torch.where(self._crashed(), reward - CRASH_PENALTY, reward)
+        extra = self.collision_penalty - CRASH_PENALTY  # a pack-mate collision can cost more than other crashes
+        return torch.where(self.collisions(), reward - extra, reward)
 
     def _out_of_bounds(self) -> torch.Tensor:
         pos = self.state[:, POS]
@@ -445,7 +483,7 @@ class PackEnv(HoverEnv):
             turn = self.uniform(len(worlds), -self.max_turn_rad, self.max_turn_rad)
             self.heading[worlds] = torch.remainder(self.heading[worlds] + turn + math.pi, 2 * math.pi) - math.pi
             ids = self.world_drones(worlds)
-            self.target[ids] = self.slot_positions(worlds).reshape(-1, 3)
+            self.target[ids] = self.assign_slots(worlds, self.slot_positions(worlds)).reshape(-1, 3)
             self.close_steps[ids] = 0
 
     def _episode_info(self, ids: torch.Tensor) -> dict[str, torch.Tensor]:
