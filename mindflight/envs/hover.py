@@ -38,6 +38,7 @@ class HoverEnv(DroneEnv):
     task_obs_size = 3
     distance_weight = 1.0  # reward lost per metre from the target...
     distance_cap_m = 1.0  # ...counted up to this far, so the reward stays ≥ 0 and crashing never pays
+    precision_bonus = 0.0  # extra reward for being very close: bonus · max(0, 1 − distance / 0.3 m)
 
     def __init__(self, n_envs: int, episode_s: float = 10.0, device: str | None = None, seed: int = 0):
         super().__init__(n_envs, episode_s, device, seed)
@@ -79,7 +80,8 @@ class HoverEnv(DroneEnv):
             late, torch.maximum(self.worst_late_distance, distance), self.worst_late_distance
         )
 
-        reward = 1.0 - self.distance_weight * distance.clamp(max=self.distance_cap_m) - 0.2 * (1.0 - upright) - 0.02 * spin - 0.1 * twitch
+        precision = self.precision_bonus * (1.0 - distance / 0.3).clamp_min(0.0)
+        reward = 1.0 + precision - self.distance_weight * distance.clamp(max=self.distance_cap_m) - 0.2 * (1.0 - upright) - 0.02 * spin - 0.1 * twitch
         return torch.where(self._crashed(), reward - CRASH_PENALTY, reward)
 
     def _crashed(self) -> torch.Tensor:

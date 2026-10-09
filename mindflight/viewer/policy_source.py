@@ -32,6 +32,7 @@ from mindflight.rl.ppo import ActorCritic
 SHOW = {
     "hover": ("grid", 64, 3.0, None),
     "waypoint": ("grid", 36, 4.5, None),
+    "sturdy": ("grid", 36, 4.5, None),
     "gates": ("shared", 8, 0.0, 20.0),
     "obstacles": ("grid", 9, 9.0, None),
     "race": ("shared", 8, 0.0, 20.0),

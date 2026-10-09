@@ -3,7 +3,10 @@
 It is the hover task with a moving target, so the reward is the same shape (see `hover.py`), with gentler distance
 numbers because targets can be over 3 m apart:
 
-    reward = 1 − 0.5 · min(distance, 2) − (tilt, spin and twitch terms as in hover)
+    reward = 1 − 0.5 · min(distance, 2) + 0.5 · max(0, 1 − distance / 0.3) − (tilt, spin, twitch as in hover)
+
+The middle term is a small "precision cone": inside 30 cm, every centimetre closer is worth a lot more. Without it,
+10 cm off cost only 0.05 points a step, and the drone was happy to hover nearby instead of on the target.
 
 A target counts as **reached** when the drone has been within 10 cm of it for the last 0.5 s before the target
 changes ("got there and settled", not just flew through). An episode is 10 s, so 4 targets. The episode's
@@ -29,6 +32,7 @@ class WaypointEnv(HoverEnv):
     name = "waypoint"
     distance_weight = 0.5
     distance_cap_m = 2.0
+    precision_bonus = 0.5  # the last 30 cm count extra, so it settles right on the target
 
     def __init__(self, n_envs: int, episode_s: float = 10.0, device: str | None = None, seed: int = 0):
         super().__init__(n_envs, episode_s, device, seed)

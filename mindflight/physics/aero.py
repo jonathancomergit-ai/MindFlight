@@ -32,6 +32,7 @@ from dataclasses import dataclass
 
 import torch
 
+from mindflight.physics.device_cache import cached_on_device
 from mindflight.physics.params import CRAZYFLIE, CrazyflieParams
 from mindflight.physics.rotations import quat_rotate, quat_rotate_inverse
 
@@ -58,6 +59,12 @@ class DroneVariation:
     ground_effect: bool = False
 
 
+@cached_on_device
+def drag_coeffs_on(device: torch.device, dtype: torch.dtype, params: CrazyflieParams = CRAZYFLIE) -> torch.Tensor:
+    """(k_xy, k_xy, k_z) as a (3,) tensor already on `device` (made once: see device_cache.py)."""
+    return torch.tensor([params.drag_coeff_xy, params.drag_coeff_xy, params.drag_coeff_z], device=device, dtype=dtype)
+
+
 def rotor_drag_world(
     quat: torch.Tensor,
     velocity_mps: torch.Tensor,
@@ -72,7 +79,7 @@ def rotor_drag_world(
     air_velocity = velocity_mps if wind_mps is None else velocity_mps - wind_mps
     air_velocity_body = quat_rotate_inverse(quat, air_velocity)
     total_radps = (rpm * RPM_TO_RADPS).sum(dim=1, keepdim=True)  # Σ ω_i, (N, 1)
-    coeff = air_velocity.new_tensor([params.drag_coeff_xy, params.drag_coeff_xy, params.drag_coeff_z])
+    coeff = drag_coeffs_on(air_velocity.device, air_velocity.dtype, params)
     drag_body = -total_radps * coeff * air_velocity_body
     return quat_rotate(quat, drag_body)
 
@@ -95,3 +102,26 @@ def ground_effect_thrust(
     h = height_m.clamp_min(ground_effect_clip_height_m(params))
     extra = thrust_n * params.ground_effect_coeff * (params.prop_radius_m / (4 * h)) ** 2
     return torch.where(upright > 0, extra, torch.zeros_like(extra))
+
+
+def aero_force_world(
+    quat: torch.Tensor,
+    position_m: torch.Tensor,
+    velocity_mps: torch.Tensor,
+    rpm: torch.Tensor,
+    thrust_body_n: torch.Tensor,
+    variation: DroneVariation,
+    params: CrazyflieParams = CRAZYFLIE,
+) -> torch.Tensor:
+    """The extra forces `variation` switches on, summed, in the world frame, (N, 3) in N: drag (with wind) and
+    ground effect. Zeros if neither is on. Called by `dynamics.step`."""
+    force = torch.zeros_like(velocity_mps)
+    if variation.drag:
+        force = force + rotor_drag_world(quat, velocity_mps, rpm, variation.wind_mps, params)
+    if variation.ground_effect:
+        x, y = quat[:, 1], quat[:, 2]
+        upright = 1 - 2 * (x * x + y * y)  # R_zz = cos(tilt)
+        extra_n = ground_effect_thrust(position_m[:, 2], thrust_body_n[:, 2], upright, params)
+        extra_body = torch.stack((torch.zeros_like(extra_n), torch.zeros_like(extra_n), extra_n), dim=1)
+        force = force + quat_rotate(quat, extra_body)
+    return force

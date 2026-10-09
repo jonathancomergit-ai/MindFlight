@@ -67,6 +67,7 @@ class GatesEnv(DroneEnv):
         device: str | None = None,
         seed: int = 0,
         difficulty: float | None = None,
+        start_difficulty: float = 0.0,
         shared_course: bool = False,
     ):
         """difficulty: None = curriculum (start at 0, climb as it learns); a number = fixed (evaluation).
@@ -74,7 +75,8 @@ class GatesEnv(DroneEnv):
         super().__init__(n_envs, episode_s, device, seed)
         # difficulty None = curriculum (start at 0 and climb); a number = fixed (used for evaluation).
         self.fixed_difficulty = difficulty is not None
-        self.difficulty = 0.0 if difficulty is None else float(difficulty)
+        # start_difficulty: where the curriculum starts (for carrying on from an earlier run's policy).
+        self.difficulty = float(start_difficulty) if difficulty is None else float(difficulty)
         self.smoothed_success = 0.0
 
         self.gate_centre = torch.zeros(n_envs, N_GATES, 3, device=self.device)

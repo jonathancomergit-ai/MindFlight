@@ -26,7 +26,20 @@ def main() -> None:
     parser.add_argument(
         "--set", nargs="*", default=[], metavar="KEY=VALUE", help="override PPOConfig fields, e.g. --set init_std=0.3"
     )
+    parser.add_argument("--env", nargs="*", default=[], metavar="KEY=VALUE", help="task options, e.g. --env randomize=false")
     args = parser.parse_args()
+
+    env_kwargs = {}
+    for item in args.env:
+        key, value = item.split("=", 1)
+        lowered = value.lower()
+        if lowered in ("true", "false"):
+            env_kwargs[key] = lowered == "true"
+        else:
+            try:
+                env_kwargs[key] = float(value) if "." in value else int(value)
+            except ValueError:
+                env_kwargs[key] = value
 
     overrides = {}
     for item in args.set:
@@ -44,7 +57,7 @@ def main() -> None:
     def start_view(ppo) -> None:
         from mindflight.viewer.live import TrainingView
 
-        view["view"] = TrainingView(args.task, {}, ppo.model, port=args.port)
+        view["view"] = TrainingView(args.task, env_kwargs, ppo.model, port=args.port)
 
     def update_view(env, metrics, model) -> None:
         view["view"](env, metrics, model)
@@ -56,6 +69,7 @@ def main() -> None:
         seed=args.seed,
         device=args.device,
         config=PPOConfig(**overrides),
+        env_kwargs=env_kwargs,
         run_dir=Path(args.run_dir) if args.run_dir else None,
         init_checkpoint=args.init,
         eval_every=args.eval_every,
