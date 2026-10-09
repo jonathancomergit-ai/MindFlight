@@ -130,3 +130,53 @@ Status (2026-10-09): **all levels done**. Results and how to run each one: READM
 | D. Viewer v0: FastAPI + WebSocket + Three.js page showing N drones from a fake stream | – | A, B |
 | E. Benchmark: steps/sec for N = 1 … 16,384 on GPU, written to `docs/benchmark.md` | C | – |
 | F. Wire sim → viewer: `python -m mindflight.demo` shows 64 drones falling / hovering live | C, D | – |
+
+---
+
+# Phase 2: from the simulator to real drones
+
+The long-term goal: the brain is trained here, the drone is custom-built, and one day that brain
+flies the real thing. Then: packs, following a person, flying where they point, and intercepting things thrown at
+them. Until the custom drone is ready, everything targets a stock **Crazyflie 2.1+** (the drone the sim already
+models), so the whole path can be proven on real hardware first. Swapping drones later = a new drone file.
+
+## How a trained brain will fly a real Crazyflie
+
+```
+ PC                                                     Crazyflie (stock firmware)
+ ┌──────────────────────────────┐   Crazyradio 2.0     ┌──────────────────────────────┐
+ │ state estimate (from drone) ─┼──◀── log stream ─────┤ state estimator (Flow/Lighthouse)
+ │ → policy (ONNX, 50 Hz)       │                      │                              │
+ │ → roll°, pitch°, yaw-rate°/s,│── send_setpoint ───▶ │ onboard attitude + rate PID  │
+ │   thrust (10001–60000)       │   (≥ every 0.5 s)    │ → motors (500 Hz)            │
+ └──────────────────────────────┘                      └──────────────────────────────┘
+```
+
+So the policy must learn to give **attitude setpoints**, not raw motor speeds, and the sim must contain a
+stand-in for the onboard controller, noisy and late state estimates, and radio delay.
+
+## Phase 2 conventions (additions to the contract above)
+
+| Thing | Rule |
+|---|---|
+| Drone file | `drones/<name>.json` holds every physical number (today's `CrazyflieParams`). Code loads it with `load_drone(name)`. Default `crazyflie_2_1_plus`. |
+| Attitude action | 4 numbers in [−1, 1]: collective thrust, roll, pitch, yaw rate. Thrust: `T = hover · (1 + 1.25 · a)` clamped to [0, max]; roll/pitch: `a · 30°`; yaw rate: `a · 180 °/s` |
+| Onboard controller | cascaded: angle P → body-rate PI(D) → torque → motor mixing, at the physics rate (500 Hz). Lives in `physics/controller.py`. Approximates the stock firmware in physical units (documented gains, not the firmware's PWM-space numbers). |
+| Sensor model | observations come from a noisy, delayed *estimate* of the state; noise and delay are per-drone random ("profiles": `ideal`, `flowdeck`, `lighthouse`) |
+| Old tasks | keep working unchanged with `action_mode="motors"` (the default for them); real-ready policies use `action_mode="attitude"` |
+
+## Phase 2 issues
+
+| Issue | What | Depends on |
+|---|---|---|
+| P1. Drone files | `drones/crazyflie_2_1_plus.json`, `load_drone`, `--drone` flag; `scripts/fit_thrust.py` turns thrust-stand measurements into a drone file (for the custom drone) | – |
+| P2. Onboard controller + attitude actions | `physics/controller.py`, CUDA-graph capture of controller + physics, `action_mode="attitude"`; tests: step responses, mixing signs; retrain hover + waypoint in attitude mode | P1 |
+| P3. Sensors and delays | noise/bias/delay profiles, observation + action latency, more randomization (motor lag, thrust, mass, centre-of-mass offset, battery sag); retrain → `policies/real_hover.pt`, `real_waypoint.pt` | P2 |
+| P4. Deploy | ONNX export; `python -m mindflight.deploy` offboard runner on cflib with safety (geofence, thrust limit, kill, takeoff/land), and a **software-in-the-loop** mode that fakes the Crazyflie (radio delay, watchdog, thrust scale) so the whole loop is tested before hardware; `docs/hardware.md` shopping list + first-flight checklist | P3 |
+| P5. Packs | shared-world multi-drone env: neighbours in the observation, drone–drone collisions, downwash on; formation flying to waypoints | P2 |
+| P6. Follow-me + pointing | simulated walking person; keep an offset / orbit; fly toward a pointed direction. Vision (pose detection) is documented as the real-world front end | P2 |
+| P7. Intercept | balls thrown at a protected point; the drone must touch the ball first; noisy ball tracking; safety rules in the docs | P2 |
+| P8. The custom drone | its measured numbers → drone file → retrain everything → fly | P1–P4 + the drone |
+
+Each issue ends like the levels did: tests that check real physics, a trained policy that passes a written
+"done when", something to watch in the viewer, and a short `docs/` page.
