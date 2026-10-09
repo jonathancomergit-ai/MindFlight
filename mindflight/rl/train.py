@@ -128,6 +128,7 @@ def train(
     env_kwargs = env_kwargs or {}
     torch.manual_seed(seed)
     env = make_env(task, n_envs, device=device, seed=seed, **env_kwargs)
+    n_envs = env.n_envs  # a task may round the count to fit (packs: a whole number of worlds)
     ppo = PPO(env.obs_size, env.action_size, config, device)
     if init_checkpoint is not None:
         model, _ = load_policy(init_checkpoint, device)

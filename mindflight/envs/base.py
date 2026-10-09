@@ -18,7 +18,8 @@ A task (hover, fly to a point, gates, ...) subclasses `DroneEnv` and fills in fo
 | `_crashed()` | which drones have failed (episode ends with a penalty) |
 
 and optionally `_finished()` (the drone completed the task early), `_post_step()` (bookkeeping such as switching
-targets), `_episode_info(ids)` (task scores) and `update_curriculum(means)` (make the task harder as it improves).
+targets), `_episode_info(ids)` (task scores), `_cut_short()` (stop an episode early without blaming the drone) and
+`update_curriculum(means)` (make the task harder as it improves).
 
 Episodes end in two different ways, and PPO treats them differently:
 - **terminated**: the drone crashed, or finished the whole task. Either way the episode is really over, so there is
@@ -144,6 +145,11 @@ class DroneEnv:
 
     def _finished(self) -> torch.Tensor:
         """Optional: (N,) bool, drones that completed the task this step (ends the episode, no penalty)."""
+        return torch.zeros(self.n_envs, dtype=torch.bool, device=self.device)
+
+    def _cut_short(self) -> torch.Tensor:
+        """Optional: (N,) bool, drones whose episode stops now through no fault of their own (packs: a pack-mate
+        crashed, so the whole pack starts over). Counted like running out of time: the future still counts."""
         return torch.zeros(self.n_envs, dtype=torch.bool, device=self.device)
 
     def update_curriculum(self, episode_means: dict[str, float]) -> dict[str, float]:
@@ -286,7 +292,7 @@ class DroneEnv:
         reward = self._reward()
         crashed = self._crashed()
         terminated = crashed | self._finished()
-        truncated = (self.step_count >= self.max_steps) & ~terminated
+        truncated = ((self.step_count >= self.max_steps) | self._cut_short()) & ~terminated
         done = terminated | truncated
         self.episode_return += reward
         self._post_step()
