@@ -2,6 +2,9 @@
 //
 // Each binary message is a Float32Array of N × 7 values, per drone: x, y, z, qw, qx, qy, qz
 // (metres, world frame, Z up; quaternion rotates body → world). See mindflight/viewer/server.py.
+//
+// /config may also list drone groups (the live demo does). Each group gets its own back-rotor colour and a line in the
+// legend. Nothing about groups goes over the WebSocket: the colours are worked out here from drone numbers.
 
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
@@ -63,54 +66,65 @@ function frameGeometry() {
   return mergeGeometries([...arms, body]);
 }
 
-function colored(geometry, color) {
-  const colors = new Float32Array(geometry.attributes.position.count * 3);
-  for (let i = 0; i < colors.length; i += 3) color.toArray(colors, i);
-  geometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
-  return geometry;
-}
-
-function rotorGeometry() {
-  // Front rotors (+x) are orange so you can see which way each drone faces.
-  const front = new THREE.Color(0xff9f43);
-  const back = new THREE.Color(0xc8d0da);
+// Rotor discs for the front motors (m0, m3 at +x) or the back motors (m1, m2 at −x).
+function rotorGeometry(front) {
   const positions = [[+armXyM, -armXyM], [-armXyM, -armXyM], [-armXyM, +armXyM], [+armXyM, +armXyM]]; // m0..m3
-  const discs = positions.map(([x, y]) => {
-    const disc = new THREE.CylinderGeometry(config.prop_radius_m, config.prop_radius_m, 0.001, 24);
-    disc.rotateX(Math.PI / 2); // cylinder axis y -> z
-    disc.translate(x, y, 0.004);
-    return colored(disc, x > 0 ? front : back);
-  });
+  const discs = positions
+    .filter(([x]) => (x > 0) === front)
+    .map(([x, y]) => {
+      const disc = new THREE.CylinderGeometry(config.prop_radius_m, config.prop_radius_m, 0.001, 24);
+      disc.rotateX(Math.PI / 2); // cylinder axis y -> z
+      disc.translate(x, y, 0.004);
+      return disc;
+    });
   return mergeGeometries(discs);
 }
 
-// ---------- the swarm: one InstancedMesh per part, so thousands of drones are two draw calls ----------
+// ---------- groups: each group colours its back rotors (the demo's 4 test groups) ----------
 
-const frameGeo = frameGeometry();
-const rotorGeo = rotorGeometry();
-const frameMaterial = new THREE.MeshStandardMaterial({ color: 0x3b4450, roughness: 0.6 });
-const rotorMaterial = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.5 });
+const GROUP_COLORS = [0x6fdc8c, 0xff8389, 0x4ea8ff, 0xc08cff]; // green, red, blue, purple
+const PLAIN_ROTOR_COLOR = new THREE.Color(0xc8d0da); // light grey, for drones in no group
+const groups = config.groups ?? []; // [{name, motors, expect, first, count}], drones first .. first + count - 1
+
+function groupColor(groupIndex) {
+  return new THREE.Color(GROUP_COLORS[groupIndex % GROUP_COLORS.length]);
+}
+
+function droneColor(droneIndex) {
+  const groupIndex = groups.findIndex((g) => droneIndex >= g.first && droneIndex < g.first + g.count);
+  return groupIndex >= 0 ? groupColor(groupIndex) : PLAIN_ROTOR_COLOR;
+}
+
+// ---------- the swarm: one InstancedMesh per part, so thousands of drones are three draw calls ----------
+
+// Front rotors are always orange so you can see which way each drone faces. The back rotors' material is white,
+// so each drone's own instance colour (its group colour, or light grey) shows unchanged.
+const parts = [
+  { geometry: frameGeometry(), material: new THREE.MeshStandardMaterial({ color: 0x3b4450, roughness: 0.6 }) },
+  { geometry: rotorGeometry(true), material: new THREE.MeshStandardMaterial({ color: 0xff9f43, roughness: 0.5 }) },
+  { geometry: rotorGeometry(false), material: new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.5 }) },
+];
+const BACK_ROTORS = 2; // index in `parts` of the part coloured per drone
 
 let capacity = 0;
-let frameMesh = null;
-let rotorMesh = null;
+let meshes = []; // one InstancedMesh per part
 
 function ensureCapacity(nDrones) {
   if (nDrones <= capacity) return;
-  if (frameMesh) {
-    scene.remove(frameMesh, rotorMesh);
-    frameMesh.dispose();
-    rotorMesh.dispose();
+  for (const mesh of meshes) {
+    scene.remove(mesh);
+    mesh.dispose();
   }
   capacity = Math.max(nDrones, 2 * capacity);
-  frameMesh = new THREE.InstancedMesh(frameGeo, frameMaterial, capacity);
-  rotorMesh = new THREE.InstancedMesh(rotorGeo, rotorMaterial, capacity);
-  for (const mesh of [frameMesh, rotorMesh]) {
+  meshes = parts.map(({ geometry, material }) => {
+    const mesh = new THREE.InstancedMesh(geometry, material, capacity);
     mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     mesh.frustumCulled = false; // drones move, so the default bounding sphere goes stale
     mesh.count = 0;
     scene.add(mesh);
-  }
+    return mesh;
+  });
+  for (let i = 0; i < capacity; i++) meshes[BACK_ROTORS].setColorAt(i, droneColor(i));
 }
 
 const sizeToggle = document.getElementById("size-toggle");
@@ -129,11 +143,12 @@ function showFrame(poses) {
     position.set(poses[o], poses[o + 1], poses[o + 2]);
     rotation.set(poses[o + 4], poses[o + 5], poses[o + 6], poses[o + 3]); // Three.js wants (x, y, z, w)
     matrix.compose(position, rotation, scale);
-    frameMesh.setMatrixAt(i, matrix);
-    rotorMesh.setMatrixAt(i, matrix);
+    for (const mesh of meshes) mesh.setMatrixAt(i, matrix);
   }
-  frameMesh.count = rotorMesh.count = nDrones;
-  frameMesh.instanceMatrix.needsUpdate = rotorMesh.instanceMatrix.needsUpdate = true;
+  for (const mesh of meshes) {
+    mesh.count = nDrones;
+    mesh.instanceMatrix.needsUpdate = true;
+  }
   hud.drones.textContent = nDrones;
 }
 
@@ -149,6 +164,42 @@ const hud = {
 function setStatus(text) {
   hud.status.textContent = text;
   hud.status.className = `status-${text}`;
+}
+
+// Legend: one line per group, "■ name  motors → what you should see".
+const legend = document.getElementById("legend");
+groups.forEach((group, groupIndex) => {
+  const row = document.createElement("div");
+  row.className = "legend-row";
+  const swatch = document.createElement("span");
+  swatch.className = "legend-swatch";
+  swatch.style.background = `#${groupColor(groupIndex).getHexString()}`;
+  const name = document.createElement("b");
+  name.textContent = group.name;
+  const motors = document.createElement("span");
+  motors.textContent = group.motors;
+  const expect = document.createElement("span");
+  expect.className = "legend-expect";
+  expect.textContent = `→ ${group.expect}`;
+  row.append(swatch, name, motors, expect);
+  legend.append(row);
+});
+legend.hidden = groups.length === 0;
+
+// Restart: the button or the R key asks the server to start the sim over (POST /reset).
+async function restartSim() {
+  await fetch("/reset", { method: "POST" });
+}
+if (config.resettable) {
+  document.getElementById("reset-row").hidden = false;
+  document.getElementById("reset-button").addEventListener("click", restartSim);
+  window.addEventListener("keydown", (event) => {
+    const plainKey = !event.ctrlKey && !event.metaKey && !event.altKey;
+    if (plainKey && (event.key === "r" || event.key === "R")) restartSim();
+  });
+  if (config.restart_after_s) {
+    document.getElementById("loop-note").textContent = `starts over every ${config.restart_after_s} s`;
+  }
 }
 
 // ---------- WebSocket stream ----------

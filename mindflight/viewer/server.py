@@ -3,7 +3,9 @@
 Routes:
 - `GET /`        the viewer page (`static/index.html`)
 - `GET /static/` the page's JavaScript
-- `GET /config`  JSON with the drone count and the drone size the page draws (from `physics/params.py`)
+- `GET /config`  JSON with the drone count and the drone size the page draws (from `physics/params.py`),
+                 plus any `extra_config` the caller adds (the demo adds its drone groups for the legend)
+- `POST /reset`  start the sim over (only when `create_app` got an `on_reset` function; the page's R key)
 - `/ws`          WebSocket that sends frames at about 30 per second
 
 Frame format (the contract the simulator uses to talk to the viewer):
@@ -16,15 +18,17 @@ Frame format (the contract the simulator uses to talk to the viewer):
     body → world, the same as columns 0:7 of the simulator state in PLAN.md. The page works out N as
     byte_length / (7 × 4), so N may change between frames.
 
-For now the frames come from `FakeSwarm`. Issue #7 plugs in the real simulator: anything with an `n_drones`
-attribute and a `frame(time_s)` method returning an (N, 7) float32 array works.
+Frames come from a `FrameSource`: anything with an `n_drones` attribute and a `frame(time_s)` method returning an
+(N, 7) float32 array. `FakeSwarm` below is one (no physics). `sim_source.SimSource` runs the real simulator in real
+time (`python -m mindflight.demo`).
 """
 
 import asyncio
 import math
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 import numpy as np
 from fastapi import FastAPI, WebSocket
@@ -102,8 +106,16 @@ def encode_frame(poses: np.ndarray) -> bytes:
     return np.ascontiguousarray(poses, dtype="<f4").tobytes()
 
 
-def create_app(source: FrameSource) -> FastAPI:
-    """Build the viewer app that streams frames from `source`."""
+def create_app(
+    source: FrameSource,
+    extra_config: dict[str, Any] | None = None,
+    on_reset: Callable[[], None] | None = None,
+) -> FastAPI:
+    """Build the viewer app that streams frames from `source`.
+
+    extra_config: more keys for `GET /config` (for example the demo's `groups`, which the page turns into a legend).
+    on_reset: called by `POST /reset` (the page's R key). Without it there is no /reset and the page hides the key.
+    """
     app = FastAPI(title="MindFlight viewer")
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -119,7 +131,17 @@ def create_app(source: FrameSource) -> FastAPI:
             "frame_rate_hz": FRAME_RATE_HZ,
             "arm_m": CRAZYFLIE.arm_m,
             "prop_radius_m": CRAZYFLIE.prop_radius_m,
+            "resettable": on_reset is not None,
+            **(extra_config or {}),
         }
+
+    if on_reset is not None:
+
+        @app.post("/reset")
+        async def reset() -> dict:
+            """Start the sim over. `async` so it runs on the same thread as the frame sender, never mid-frame."""
+            on_reset()
+            return {"ok": True}
 
     @app.websocket("/ws")
     async def stream(websocket: WebSocket) -> None:
