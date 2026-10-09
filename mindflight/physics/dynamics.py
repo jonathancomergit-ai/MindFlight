@@ -28,6 +28,7 @@ weighted average of those slopes, 1/6 · (k1 + 2·k2 + 2·k3 + k4). Its error sh
 
 import torch
 
+from mindflight.physics.device_cache import cached_on_device
 from mindflight.physics.motors import motor_step, rotor_wrench
 from mindflight.physics.params import CRAZYFLIE, GRAVITY_MPS2, CrazyflieParams
 from mindflight.physics.rotations import quat_multiply, quat_normalize, quat_rotate
@@ -41,6 +42,25 @@ VEL = slice(7, 10)
 OMEGA = slice(10, 13)
 RPM = slice(13, 17)
 STATE_SIZE = 17
+
+
+@cached_on_device
+def gravity_on(device: torch.device, dtype: torch.dtype) -> torch.Tensor:
+    """Gravity's acceleration (0, 0, −g) in m/s², world frame, as a (3,) tensor already on `device`.
+
+    Made once per (device, dtype) so `step` never copies it from the CPU (see `device_cache.py` for why).
+    Read-only: every caller shares the same tensor.
+    """
+    return torch.tensor([0.0, 0.0, -GRAVITY_MPS2], device=device, dtype=dtype)
+
+
+@cached_on_device
+def inertia_on(device: torch.device, dtype: torch.dtype, params: CrazyflieParams = CRAZYFLIE) -> torch.Tensor:
+    """The diagonal of the inertia matrix, (Ixx, Iyy, Izz) in kg·m², as a (3,) tensor already on `device`.
+
+    Made once per (device, dtype, params) so `step` never copies it from the CPU. Read-only, shared.
+    """
+    return torch.tensor([params.ixx_kgm2, params.iyy_kgm2, params.izz_kgm2], device=device, dtype=dtype)
 
 
 def make_state(
@@ -125,7 +145,7 @@ def step(
     thrust_body_n, torque_body_nm = rotor_wrench(rpm, params)
 
     # 2. Linear acceleration in the world frame.
-    gravity_mps2 = state.new_tensor([0.0, 0.0, -GRAVITY_MPS2])
+    gravity_mps2 = gravity_on(state.device, state.dtype)  # (0, 0, −g), cached on the state's device
     accel_mps2 = quat_rotate(quat, thrust_body_n) / params.mass_kg + gravity_mps2
 
     # 3. Position and linear velocity: exact for an acceleration that is constant over the step.
@@ -133,7 +153,7 @@ def step(
     new_velocity_mps = velocity_mps + accel_mps2 * dt
 
     # 4. Orientation and angular velocity together, with RK4 (torque held constant over the step).
-    inertia_kgm2 = state.new_tensor([params.ixx_kgm2, params.iyy_kgm2, params.izz_kgm2])
+    inertia_kgm2 = inertia_on(state.device, state.dtype, params)  # (Ixx, Iyy, Izz), cached on the state's device
     quat_k1, omega_k1 = rotation_rates(quat, omega_radps, torque_body_nm, inertia_kgm2)
     quat_k2, omega_k2 = rotation_rates(
         quat + 0.5 * dt * quat_k1, omega_radps + 0.5 * dt * omega_k1, torque_body_nm, inertia_kgm2

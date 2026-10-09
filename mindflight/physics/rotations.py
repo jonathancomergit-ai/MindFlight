@@ -14,6 +14,8 @@ and rotating a vector v by it is v_world = q ⊗ (0, v_body) ⊗ q*.
 
 import torch
 
+from mindflight.physics.device_cache import cached_on_device
+
 
 def quat_multiply(q1: torch.Tensor, q2: torch.Tensor) -> torch.Tensor:
     """Hamilton product q1 ⊗ q2, shapes (N, 4) -> (N, 4).
@@ -36,12 +38,18 @@ def quat_multiply(q1: torch.Tensor, q2: torch.Tensor) -> torch.Tensor:
     )
 
 
+@cached_on_device
+def conjugate_signs_on(device: torch.device, dtype: torch.dtype) -> torch.Tensor:
+    """(1, −1, −1, −1) as a (4,) tensor already on `device`, made once so `quat_conjugate` never copies from the CPU."""
+    return torch.tensor([1.0, -1.0, -1.0, -1.0], device=device, dtype=dtype)
+
+
 def quat_conjugate(q: torch.Tensor) -> torch.Tensor:
     """Conjugate q* = (w, −x, −y, −z), shape (N, 4).
 
     For a unit quaternion this is the inverse rotation: q ⊗ q* = (1, 0, 0, 0).
     """
-    return q * q.new_tensor([1.0, -1.0, -1.0, -1.0])
+    return q * conjugate_signs_on(q.device, q.dtype)
 
 
 def quat_normalize(q: torch.Tensor, eps: float = 1e-12) -> torch.Tensor:
