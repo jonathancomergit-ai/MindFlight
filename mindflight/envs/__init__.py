@@ -6,12 +6,14 @@
 from mindflight.envs.base import DroneEnv
 from mindflight.envs.gates import GatesEnv
 from mindflight.envs.hover import HoverEnv
+from mindflight.envs.obstacles import ObstaclesEnv
 from mindflight.envs.waypoint import WaypointEnv
 
 TASKS: dict[str, type[DroneEnv]] = {
     HoverEnv.name: HoverEnv,
     WaypointEnv.name: WaypointEnv,
     GatesEnv.name: GatesEnv,
+    ObstaclesEnv.name: ObstaclesEnv,
 }
 
 
