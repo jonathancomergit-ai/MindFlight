@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MindFlight viewer</title>
+  <style>
+    html, body { margin: 0; height: 100%; overflow: hidden; background: #10141a; font-family: system-ui, sans-serif; }
+    #hud {
+      position: absolute; top: 10px; left: 10px; padding: 8px 12px; border-radius: 6px;
+      background: rgba(0, 0, 0, 0.55); color: #e6e6e6; font-size: 13px; line-height: 1.6;
+      font-variant-numeric: tabular-nums; user-select: none;
+    }
+    #hud b { color: #fff; }
+    .status-connected { color: #6fdc8c; }
+    .status-connecting { color: #f1c21b; }
+    .status-disconnected { color: #ff8389; }
+  </style>
+  <!-- Three.js from a pinned CDN version. No npm, no build step. -->
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+      }
+    }
+  </script>
+</head>
+<body>
+  <div id="hud">
+    <div>drones <b id="hud-drones">0</b></div>
+    <div>render <b id="hud-render-fps">0</b> fps · stream <b id="hud-stream-fps">0</b> frames/s</div>
+    <div>server <b id="hud-status" class="status-connecting">connecting</b></div>
+    <label><input type="checkbox" id="size-toggle"> size ×10</label>
+  </div>
+  <script type="module" src="/static/main.js"></script>
+</body>
+</html>

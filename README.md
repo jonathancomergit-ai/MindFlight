@@ -18,3 +18,12 @@ python -m venv .venv --system-site-packages
 pip install -e .[dev]
 python -m pytest -q
 ```
+
+## Watch the drones
+
+```
+python -m mindflight.viewer --fake --n 64
+```
+
+Then open http://127.0.0.1:8000/. `--fake` streams a grid of bobbing drones until the simulator is wired in. Drag to orbit,
+scroll to zoom, and tick **size ×10** to see real-scale drones from far away. The server only listens on this machine.
