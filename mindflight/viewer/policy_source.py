@@ -211,6 +211,33 @@ class PolicySource:
                 for p in pillars[i]
                 if p[2] > 0
             ]
+
+        # General shapes any task can use (people, balls, links between drones), per drone in its own world:
+        #   "spheres"   (N, K, 4): x, y, z, radius            radius ≤ 0 = skip
+        #   "cylinders" (N, K, 5): x, y, z_bottom, height, radius (upright)
+        #   "lines"     (N, K, 6): x1, y1, z1, x2, y2, z2     zero length = skip
+        # with optional "<kind>_colors": K hex strings like "#ff9f43", one per K slot.
+        for kind, width in (("spheres", 4), ("cylinders", 5), ("lines", 6)):
+            if kind not in objects:
+                continue
+            shapes = objects[kind]
+            colors = objects.get(f"{kind}_colors") or ["#c8d0da"] * shapes.shape[1]
+            drones = [0] if shared else range(shapes.shape[0])
+            out = []
+            for i in drones:
+                for k in range(shapes.shape[1]):
+                    row = shapes[i, k].tolist()
+                    if kind == "lines":
+                        row[0:3] = [v + o for v, o in zip(row[0:3], offsets[i].tolist())]
+                        row[3:6] = [v + o for v, o in zip(row[3:6], offsets[i].tolist())]
+                        if row[0:3] == row[3:6]:
+                            continue
+                    else:
+                        if row[-1] <= 0:
+                            continue
+                        row[0:3] = [v + o for v, o in zip(row[0:3], offsets[i].tolist())]
+                    out.append([round(v, 3) for v in row[:width]] + [colors[k]])
+            scene[kind] = out
         return scene
 
     def racing_mask(self) -> torch.Tensor:

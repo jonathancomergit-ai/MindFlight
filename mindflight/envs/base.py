@@ -154,7 +154,9 @@ class DroneEnv:
     def display_objects(self) -> dict[str, torch.Tensor]:
         """Optional: the task's objects for the viewer, per drone, in that drone's own world. Keys the viewer knows:
         "targets" (N, 3); "gate_centre" (N, G, 3), "gate_heading" (N, G), "gate_opening" (N,), "next_gate" (N,);
-        "pillars" (N, P, 3) as x, y, radius (radius 0 = no pillar)."""
+        "pillars" (N, P, 3) as x, y, radius (radius 0 = no pillar); and general shapes "spheres" (N, K, 4: x, y, z,
+        radius), "cylinders" (N, K, 5: x, y, z_bottom, height, radius), "lines" (N, K, 6: two end points), each with
+        optional "<kind>_colors" (K hex strings). See viewer/policy_source.py -> PolicySource.scene."""
         return {}
 
     def _post_step(self) -> None:

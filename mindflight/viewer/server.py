@@ -36,7 +36,10 @@ Message types the page understands (all coordinates in metres, world frame):
 
     {"type": "scene", "targets": [[x, y, z], ...],                      small spheres (e.g. waypoint targets)
                       "gates": [{"c": [x, y, z], "yaw": ψ, "size": s, "state": "next" | "later" | "done"}, ...],
-                      "pillars": [[x, y, radius], ...]}                 floor-to-ceiling cylinders
+                      "pillars": [[x, y, radius], ...],                 floor-to-ceiling cylinders
+                      "spheres": [[x, y, z, r, "#rrggbb"], ...],          general shapes for any task
+                      "cylinders": [[x, y, z_bottom, height, r, "#rrggbb"], ...],
+                      "lines": [[x1, y1, z1, x2, y2, z2, "#rrggbb"], ...]}
         Replaces the whole previous scene. Any key may be missing.
     {"type": "info", "lines": ["...", ...]}                             text lines under the HUD
     {"type": "charts", "series": [{"key": "...", "label": "..."}, ...]} which metrics to plot
