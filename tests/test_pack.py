@@ -321,3 +321,13 @@ def test_ordered_start_puts_drone_k_kth_from_the_right():
     h = scattered.heading[:, None]
     left = -torch.sin(h) * pos[..., 0] + torch.cos(h) * pos[..., 1]
     assert ((left[:, 1:] - left[:, :-1]) < -0.2).any()
+
+
+def test_real_world_and_noisy_sensors_keep_working_with_downwash():
+    env = make_env("pack", 12, device="cpu", seed=0, real_world=True, sensors="lighthouse")
+    v = env.variation
+    assert v.downwash and v.group_size == 6 and v.mass_scale is not None and v.com_offset_m is not None
+    obs = env.reset()
+    for _ in range(5):
+        obs, reward, done, info = env.step(torch.zeros(12, 4))
+    assert obs.shape == (12, env.obs_size) and torch.isfinite(obs).all()

@@ -53,7 +53,7 @@ POLICY_SUBSTEPS = 10  # physics steps per policy action: 500 Hz physics / 50 Hz 
 WARMUP_RUNS = 3  # eager runs on a side stream before capture, as the PyTorch CUDA graph docs ask
 
 
-VARIATION_TENSORS = ("mass_scale", "thrust_scale", "motor_tau_scale", "wind_mps", "world_id")  # tensor fields
+VARIATION_TENSORS = ("mass_scale", "thrust_scale", "motor_tau_scale", "wind_mps", "world_id", "com_offset_m")
 
 
 class CudaGraphStepper:

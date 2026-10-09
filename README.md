@@ -60,3 +60,25 @@ tick **size ×10** to see real-scale drones from far away. The server only liste
 - Each training run writes `runs/<task>/<date-time>/` with `metrics.jsonl`, `latest.pt` and `best.pt`.
 - `python -m mindflight.evaluate policies/hover.pt` scores a policy on 1,000 fixed test starts.
 - `python scripts/plot_run.py runs/hover/<run> curves.png` draws a run's learning curves.
+
+## Phase 2: toward real drones
+
+The goal: a brain trained here flies a real drone. First a stock Crazyflie 2.1+, later a custom-built
+design. Plan and issues: [PLAN.md](PLAN.md) → "Phase 2".
+
+| Piece | What it does | Explained |
+|---|---|---|
+| Drone files | every physical number in `mindflight/drones/<name>.json`; `scripts/fit_thrust.py` makes one from thrust-stand data | [docs/drones.md](docs/drones.md) |
+| Onboard controller | brains send thrust / roll / pitch / yaw rate, like the real radio link (`--env action_mode=attitude`) | [docs/phase2-controller.md](docs/phase2-controller.md) |
+| Sensors and real drones | noisy, late estimates and randomized drones (`--env sensors=flowdeck real_world=true`) | [docs/phase2-sensors.md](docs/phase2-sensors.md) |
+| Deploy | fly a brain on a fake Crazyflie now, a real one later | [docs/phase2-deploy.md](docs/phase2-deploy.md), [docs/hardware.md](docs/hardware.md) |
+
+Brains ready for real hardware: `policies/real_hover.pt` and `policies/real_waypoint.pt`.
+
+```
+python -m mindflight.deploy --policy policies/real_waypoint.pt --sitl --waypoints 0.5,0,0.6 0.5,0.5,0.8
+```
+
+That flies the full mission (takeoff, waypoints, landing) on the simulated Crazyflie through the same code that
+will fly the real one. With a real drone: swap `--sitl` for `--uri radio://0/80/2M/E7E7E7E7E7`, after the
+first-flight checklist in [docs/hardware.md](docs/hardware.md).

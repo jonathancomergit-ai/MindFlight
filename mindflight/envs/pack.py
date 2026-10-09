@@ -205,6 +205,7 @@ class PackEnv(HoverEnv):
             raise ValueError(f"neighbours must be between 1 and group_size − 1 = {group_size - 1}")
         self.share_goals = bool(share_goals)
         self.task_obs_size = 3 + 6 * self.neighbours + 1 + (3 * self.neighbours if self.share_goals else 0)
+        options.setdefault("success_radius_m", SUCCESS_RADIUS_M)
         super().__init__(n_envs, episode_s, device, seed, action_mode=action_mode, **options)
 
         self.spacing_m = float(spacing_m)
@@ -235,7 +236,12 @@ class PackEnv(HoverEnv):
 
         self.downwash = bool(downwash)
         if self.downwash:  # worlds are consecutive blocks of G drones: the cheap W·G² downwash
-            self.variation = DroneVariation(world_id=self.world_id, downwash=True, group_size=group_size)
+            if self.variation is None:
+                self.variation = DroneVariation()
+            # Add to what the base class set up (real_world=True makes its own variation): keep it, switch on downwash.
+            self.variation.world_id = self.world_id
+            self.variation.downwash = True
+            self.variation.group_size = group_size
 
     # ---------- shapes of things ----------
 
@@ -391,7 +397,7 @@ class PackEnv(HoverEnv):
         spin = (self.state[:, OMEGA] ** 2).sum(dim=1)
         twitch = ((self.action - self.prev_action) ** 2).sum(dim=1)
         precision = self.precision_bonus * (1.0 - distance / 0.3).clamp_min(0.0)
-        precision = precision + self.inside_bonus * (distance < SUCCESS_RADIUS_M).float()
+        precision = precision + self.inside_bonus * (distance < self.success_radius_m).float()
         reward = (
             self.alive_bonus
             + precision
@@ -418,7 +424,7 @@ class PackEnv(HoverEnv):
     def _post_step(self) -> None:
         """Count steps each drone spends within 15 cm of its slot. When the formation's 3 s are up, the waypoint
         counts if the whole pack has settled; then the formation moves to a new centre and turns."""
-        close = self.distance() < SUCCESS_RADIUS_M
+        close = self.distance() < self.success_radius_m
         self.close_steps = torch.where(close, self.close_steps + 1, torch.zeros_like(self.close_steps))
         if self.downwash:
             push = -downwash_grouped(self.per_world(self.state[:, POS]), self.params)[..., 2].flatten()

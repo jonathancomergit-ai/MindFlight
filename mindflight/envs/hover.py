@@ -42,8 +42,19 @@ class HoverEnv(DroneEnv):
     precision_bonus = 0.0  # extra reward for being very close: bonus · max(0, 1 − distance / 0.3 m)
     inside_bonus = 0.0  # extra reward for every step inside the 10 cm success radius
 
-    def __init__(self, n_envs: int, episode_s: float = 10.0, device: str | None = None, seed: int = 0, **options):
+    def __init__(
+        self,
+        n_envs: int,
+        episode_s: float = 10.0,
+        device: str | None = None,
+        seed: int = 0,
+        success_radius_m: float = SUCCESS_RADIUS_M,
+        **options,
+    ):
+        """success_radius_m: how close counts as on target (10 cm). With flow-deck sensors the drone's own sense
+        of position is only good to a few cm, so P3 also tests at 15 cm (docs/phase2-sensors.md)."""
         super().__init__(n_envs, episode_s, device, seed, **options)
+        self.success_radius_m = success_radius_m
         self.target = torch.zeros(n_envs, 3, device=self.device)
         self.target[:, 2] = TARGET_HEIGHT_M
         # Furthest the drone got from the target during the second half of its episode (m).
@@ -83,7 +94,7 @@ class HoverEnv(DroneEnv):
         )
 
         precision = self.precision_bonus * (1.0 - distance / 0.3).clamp_min(0.0)
-        precision = precision + self.inside_bonus * (distance < SUCCESS_RADIUS_M).float()
+        precision = precision + self.inside_bonus * (distance < self.success_radius_m).float()
         reward = self.alive_bonus + precision - self.distance_weight * distance.clamp(max=self.distance_cap_m) - 0.2 * (1.0 - upright) - 0.02 * spin - 0.1 * twitch
         return torch.where(self._crashed(), reward - CRASH_PENALTY, reward)
 
@@ -102,5 +113,5 @@ class HoverEnv(DroneEnv):
 
     def _episode_info(self, ids: torch.Tensor) -> dict[str, torch.Tensor]:
         survived = self.step_count[ids] >= self.max_steps
-        success = survived & ~self._crashed()[ids] & (self.worst_late_distance[ids] < SUCCESS_RADIUS_M)
+        success = survived & ~self._crashed()[ids] & (self.worst_late_distance[ids] < self.success_radius_m)
         return {"success": success.float(), "final_distance_m": self.distance()[ids]}
