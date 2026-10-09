@@ -32,6 +32,7 @@ import math
 import torch
 
 from mindflight.physics.dynamics import OMEGA, PHYSICS_DT_S, POS, QUAT, RPM, STATE_SIZE, VEL, step
+from mindflight.physics.fast import CudaGraphStepper
 from mindflight.physics.params import CRAZYFLIE
 from mindflight.physics.rotations import quat_from_axis_angle, quat_multiply, quat_to_matrix
 
@@ -74,6 +75,10 @@ class DroneEnv:
     task_obs_size = 0  # set by each task
     action_size = 4
 
+    # On a GPU the 10 physics substeps run as one recorded CUDA graph with fused kernels (physics/fast.py): same
+    # physics, ~50× faster. Set False to use the plain readable `step` loop instead.
+    fast_physics = True
+
     def __init__(self, n_envs: int, episode_s: float = 10.0, device: str | None = None, seed: int = 0):
         if device is None:
             device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -88,6 +93,7 @@ class DroneEnv:
         self.step_count = torch.zeros(n_envs, dtype=torch.long, device=self.device)
         # Running totals for the episode each drone is in, reported when it ends.
         self.episode_return = torch.zeros(n_envs, device=self.device)
+        self.stepper: CudaGraphStepper | None = None  # built on first use (recording takes a few seconds)
 
     @property
     def obs_size(self) -> int:
@@ -169,9 +175,19 @@ class DroneEnv:
         base = torch.cat((self.state[:, VEL], rotation, self.state[:, OMEGA], self.action), dim=1)
         return torch.cat((base, self._task_obs()), dim=1)
 
-    def reset(self) -> torch.Tensor:
-        """Start a fresh episode for every drone and return the first observations."""
+    def reset(self, stagger: bool = False) -> torch.Tensor:
+        """Start a fresh episode for every drone and return the first observations.
+
+        stagger=True (training): each drone starts at a random point of its time limit, as if it had already been
+        flying a while. Otherwise all 4,096 drones would time out on the same step, and get new targets on the same
+        step, forever: some rollouts would be full of endings and target jumps and others would have none, and the
+        learner would lurch between them (we saw the value loss spike on that beat and the waypoint policy fall apart).
+        """
         self._reset_ids(torch.arange(self.n_envs, device=self.device))
+        if stagger:
+            self.step_count = torch.randint(
+                0, self.max_steps, (self.n_envs,), generator=self.generator, device=self.device
+            )
         return self.observe()
 
     def _reset_ids(self, ids: torch.Tensor) -> None:
@@ -188,6 +204,11 @@ class DroneEnv:
     def physics(self, rpm_cmd: torch.Tensor) -> None:
         """Run SUBSTEPS physics steps with the motor command held fixed (a zero-order hold, like a real flight
         controller that updates its motor outputs at 50 Hz)."""
+        if self.fast_physics and self.device.type == "cuda":
+            if self.stepper is None:
+                self.stepper = CudaGraphStepper(self.n_envs, self.device, substeps=SUBSTEPS, compile=True)
+            self.state = self.stepper.run(self.state, rpm_cmd)
+            return
         state = self.state
         for _ in range(SUBSTEPS):
             state = step(state, rpm_cmd)

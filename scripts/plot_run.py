@@ -25,7 +25,12 @@ def plot(runs: dict[str, Path], out: Path, title: str = "") -> None:
         ("eval_success", "success rate (test: 1,000 fixed starts)"),
         ("episode_length_s", "episode length (s)"),
     ]
-    fig, axes = plt.subplots(2, 2, figsize=(10, 6.5))
+    if any("difficulty" in r for run_dir in runs.values() for r in load(run_dir)):
+        keys.append(("difficulty", "curriculum difficulty (0 = easy, 1 = hardest)"))
+    columns = 3 if len(keys) > 4 else 2
+    fig, axes = plt.subplots(2, columns, figsize=(5 * columns, 6.5))
+    for ax in axes.flat[len(keys) :]:
+        ax.axis("off")
     for (key, label), ax in zip(keys, axes.flat):
         for name, run_dir in runs.items():
             rows = [r for r in load(run_dir) if key in r]

@@ -211,7 +211,7 @@ const sceneGroup = new THREE.Group();
 scene.add(sceneGroup);
 const GATE_COLORS = { next: new THREE.Color(0x6fdc8c), later: new THREE.Color(0xff9f43), done: new THREE.Color(0x4a5260) };
 const GATE_BAR_M = 0.04; // drawn frame thickness
-const PILLAR_HEIGHT_M = 4.0;
+const PILLAR_HEIGHT_M = 3.0; // the obstacle arena's ceiling
 
 function clearScene() {
   for (const child of [...sceneGroup.children]) {
@@ -274,27 +274,32 @@ function showScene(message) {
         return pillar;
       }),
     );
-    sceneGroup.add(new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({ color: 0x8a94a3, roughness: 0.8 })));
+    const pillarMaterial = new THREE.MeshStandardMaterial({ color: 0x8a94a3, roughness: 0.8, transparent: true, opacity: 0.6 });
+    sceneGroup.add(new THREE.Mesh(geometry, pillarMaterial));
     for (const [x, y] of message.pillars) points.push([x, y]);
   }
   fitView(points);
 }
 
-// The first time we learn how big the world is, grow the floor grid and pull the camera back to see it all.
+// The first time we learn how big the world is, grow the floor grid and point the camera at the middle of it.
 let viewFitted = false;
 function fitView(points) {
   if (viewFitted || points.length === 0) return;
   viewFitted = true;
-  let reach = 0;
-  for (const [x, y] of points) reach = Math.max(reach, Math.abs(x), Math.abs(y));
+  const xs = points.map((p) => p[0]);
+  const ys = points.map((p) => p[1]);
+  const [minX, maxX, minY, maxY] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];
+  const centreX = (minX + maxX) / 2;
+  const centreY = (minY + maxY) / 2;
+  const extent = Math.max(maxX - minX, maxY - minY, 4); // metres the camera has to take in
+  const reach = Math.max(Math.abs(minX), Math.abs(maxX), Math.abs(minY), Math.abs(maxY));
   const size = 2 * Math.ceil(reach + 2);
-  if (size > gridSizeM) {
-    grid.scale.setScalar(size / gridSizeM);
-    camera.position.set(-size * 0.45, -size * 0.35, size * 0.3);
-    camera.far = Math.max(camera.far, size * 4);
-    camera.updateProjectionMatrix();
-    controls.update();
-  }
+  if (size > gridSizeM) grid.scale.setScalar(size / gridSizeM);
+  controls.target.set(centreX, centreY, 1);
+  camera.position.set(centreX - extent * 0.55, centreY - extent * 0.45, extent * 0.45 + 1);
+  camera.far = Math.max(camera.far, size * 4);
+  camera.updateProjectionMatrix();
+  controls.update();
 }
 
 // ---------- info lines, charts and the leaderboard (text messages) ----------

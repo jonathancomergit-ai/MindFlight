@@ -12,12 +12,18 @@ from mindflight.envs import TASKS, make_env
 from mindflight.rl.train import evaluate, load_policy
 
 
-def score(path: str, n: int = 1000, device: str | None = None, seed: int = 12345, **overrides) -> dict[str, float]:
-    """Evaluate one checkpoint -> averages of its per-episode numbers (success, crashed, return, ...)."""
+def score(
+    path: str, n: int = 1000, device: str | None = None, seed: int = 12345, task: str | None = None, **overrides
+) -> dict[str, float]:
+    """Evaluate one checkpoint -> averages of its per-episode numbers (success, crashed, return, ...).
+
+    task: test on a different task than the one it was trained for (it must have the same observation size),
+    e.g. the waypoint policy on the windy sturdy task.
+    """
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     model, checkpoint = load_policy(path, device)
-    task = checkpoint["task"]
-    kwargs = dict(checkpoint.get("env_kwargs", {}))
+    kwargs = {} if task else dict(checkpoint.get("env_kwargs", {}))
+    task = task or checkpoint["task"]
     if getattr(TASKS[task], "has_curriculum", False):
         kwargs["difficulty"] = 1.0
     kwargs.update(overrides)
@@ -30,14 +36,16 @@ def main() -> None:
     parser.add_argument("policies", nargs="+", help="checkpoint files")
     parser.add_argument("--n", type=int, default=1000, help="test episodes per policy (default 1000)")
     parser.add_argument("--seed", type=int, default=12345)
+    parser.add_argument("--task", default=None, help="test every policy on this task instead of its own")
     args = parser.parse_args()
 
-    print(f"{'policy':<34} {'task':<10} {'success':>8} {'crashed':>8} {'return':>8} {'length':>7}")
+    print(f"{'policy':<34} {'task':<10} {'success':>8} {'crashed':>8} {'return':>8} {'length':>7} {'lap':>7}")
     for path in args.policies:
-        s = score(path, n=args.n, seed=args.seed)
+        s = score(path, n=args.n, seed=args.seed, task=args.task)
+        lap = f"{s['lap_time_s']:6.2f}s" if "lap_time_s" in s else "      -"
         print(
             f"{path:<34} {s['task']:<10} {100 * s.get('success', 0):7.1f}% {100 * s['crashed']:7.1f}% "
-            f"{s['return']:8.1f} {s['length_s']:6.1f}s"
+            f"{s['return']:8.1f} {s['length_s']:6.1f}s {lap}"
         )
 
 

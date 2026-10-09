@@ -21,3 +21,6 @@ Desktop.ini
 
 # Agent Office
 .agent-office/
+
+# Training console logs
+*.log
