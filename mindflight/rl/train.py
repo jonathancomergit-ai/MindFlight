@@ -107,12 +107,14 @@ def train(
     run_dir: Path | None = None,
     init_checkpoint: str | Path | None = None,
     eval_every: int = 50,
-    on_iteration: Callable[[DroneEnv, dict], None] | None = None,
+    on_iteration: Callable[[DroneEnv, dict, ActorCritic], None] | None = None,
+    on_start: Callable[[PPO], None] | None = None,
     log: Callable[[str], None] = print,
 ) -> Path:
     """Train a policy for `task`. Returns the run folder, which holds metrics.jsonl, latest.pt and best.pt.
 
-    on_iteration(env, metrics) is called after every iteration (the live viewer uses it).
+    on_start(ppo) is called once the learner exists; on_iteration(env, metrics, model) after every iteration (the
+    live viewer uses both).
     init_checkpoint: start from an existing policy instead of from scratch (fine-tuning, curricula).
     """
     if device is None:
@@ -137,6 +139,8 @@ def train(
         json.dumps({"task": task, "n_envs": n_envs, "seed": seed, "env_kwargs": env_kwargs, **asdict(config)}, indent=2)
     )
     metrics_file = open(run_dir / "metrics.jsonl", "a", encoding="utf-8")
+    if on_start is not None:
+        on_start(ppo)
     log(f"run folder: {run_dir}   task {task}, {n_envs} drones on {device}, obs {env.obs_size}")
 
     buffer = RolloutBuffer(config.rollout_steps, n_envs, env.obs_size, env.action_size, device)
@@ -200,7 +204,7 @@ def train(
         metrics_file.flush()
         log(format_metrics(metrics))
         if on_iteration is not None:
-            on_iteration(env, metrics)
+            on_iteration(env, metrics, ppo.model)
 
     metrics_file.close()
     return run_dir

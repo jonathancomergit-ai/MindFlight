@@ -120,6 +120,12 @@ class DroneEnv:
         (e.g. "episode_success"). A task can make itself harder here. Returns numbers to log (e.g. difficulty)."""
         return {}
 
+    def display_objects(self) -> dict[str, torch.Tensor]:
+        """Optional: the task's objects for the viewer, per drone, in that drone's own world. Keys the viewer knows:
+        "targets" (N, 3); "gate_centre" (N, G, 3), "gate_heading" (N, G), "gate_opening" (N,), "next_gate" (N,);
+        "pillars" (N, P, 3) as x, y, radius (radius 0 = no pillar)."""
+        return {}
+
     def _post_step(self) -> None:
         """Optional: task bookkeeping after the reward, before the next observation (e.g. switch to a new target)."""
 

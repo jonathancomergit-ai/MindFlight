@@ -65,7 +65,10 @@ class GatesEnv(DroneEnv):
         device: str | None = None,
         seed: int = 0,
         difficulty: float | None = None,
+        shared_course: bool = False,
     ):
+        """difficulty: None = curriculum (start at 0, climb as it learns); a number = fixed (evaluation).
+        shared_course: every drone flies the same course (the race and the viewer); they line up side by side."""
         super().__init__(n_envs, episode_s, device, seed)
         # difficulty None = curriculum (start at 0 and climb); a number = fixed (used for evaluation).
         self.fixed_difficulty = difficulty is not None
@@ -80,6 +83,9 @@ class GatesEnv(DroneEnv):
         self.passed = torch.zeros(n_envs, dtype=torch.bool, device=self.device)
         self.hit_frame = torch.zeros(n_envs, dtype=torch.bool, device=self.device)
         self.finish_time_s = torch.zeros(n_envs, device=self.device)
+        self.shared_course = shared_course
+        if shared_course:
+            self.new_shared_course()
 
     # ---------- the course ----------
 
@@ -105,16 +111,31 @@ class GatesEnv(DroneEnv):
             headings[:, k] = heading
         return centres, headings
 
+    def new_shared_course(self) -> None:
+        """Make one new course for every drone to share (shared_course mode). Takes effect at each drone's reset."""
+        self.course_centres, self.course_headings = self.make_courses(1)
+
     def _reset_task(self, ids: torch.Tensor) -> None:
         n = len(ids)
         start = torch.zeros(n, 3, device=self.device)
-        start[:, :2] = self.uniform(n, -0.2, 0.2, size=2)
-        start[:, 2] = START_HEIGHT_M + self.uniform(n, -0.2, 0.2)
+        start[:, 2] = START_HEIGHT_M
+        if self.shared_course:
+            # Line up side by side, 0.3 m apart, across the way to the first gate.
+            heading = self.course_headings[0, 0]
+            across = torch.stack((-torch.sin(heading), torch.cos(heading)))
+            slot = (ids.float() - (self.n_envs - 1) / 2) * 0.3
+            start[:, :2] = slot[:, None] * across[None, :]
+        else:
+            start[:, :2] = self.uniform(n, -0.2, 0.2, size=2)
+            start[:, 2] += self.uniform(n, -0.2, 0.2)
         self.state[ids, POS] = start
         self.state[ids, QUAT] = self.random_tilt(n, math.radians(15))
         self.state[ids, VEL] = self.uniform(n, -0.3, 0.3, size=3)
         self.state[ids, OMEGA] = self.uniform(n, -0.5, 0.5, size=3)
-        centres, headings = self.make_courses(n)
+        if self.shared_course:
+            centres, headings = self.course_centres.expand(n, -1, -1), self.course_headings.expand(n, -1)
+        else:
+            centres, headings = self.make_courses(n)
         self.gate_centre[ids] = centres
         self.gate_heading[ids] = headings
         self.gate_opening[ids] = opening_m(self.difficulty)
@@ -134,6 +155,14 @@ class GatesEnv(DroneEnv):
         heading = self.gate_heading[rows, index]
         normal = torch.stack((torch.cos(heading), torch.sin(heading), torch.zeros_like(heading)), dim=1)
         return centre, normal
+
+    def display_objects(self) -> dict[str, torch.Tensor]:
+        return {
+            "gate_centre": self.gate_centre,
+            "gate_heading": self.gate_heading,
+            "gate_opening": self.gate_opening,
+            "next_gate": self.next_gate,
+        }
 
     def _task_obs(self) -> torch.Tensor:
         pos = self.state[:, POS]

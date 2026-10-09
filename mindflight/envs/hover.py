@@ -62,6 +62,9 @@ class HoverEnv(DroneEnv):
         """(N,) metres from each drone to its target."""
         return (self.target - self.state[:, POS]).norm(dim=1)
 
+    def display_objects(self) -> dict[str, torch.Tensor]:
+        return {"targets": self.target}
+
     def _task_obs(self) -> torch.Tensor:
         return self.target - self.state[:, POS]
 

@@ -24,6 +24,19 @@
       border: 1px solid rgba(255, 255, 255, 0.25); border-radius: 4px; padding: 1px 8px;
     }
     #reset-row button:hover { background: rgba(255, 255, 255, 0.22); }
+    #info { margin-top: 6px; padding-top: 6px; border-top: 1px solid rgba(255, 255, 255, 0.15); max-width: 460px; }
+    #info[hidden], #charts[hidden], #board[hidden] { display: none; }
+    .panel {
+      position: absolute; padding: 8px 12px; border-radius: 6px; background: rgba(0, 0, 0, 0.55);
+      color: #e6e6e6; font-size: 12px; font-variant-numeric: tabular-nums; user-select: none;
+    }
+    #charts { right: 10px; bottom: 10px; display: flex; flex-direction: column; gap: 6px; }
+    .chart-label { color: #c8d0da; margin-bottom: 2px; }
+    .chart canvas { display: block; background: rgba(255, 255, 255, 0.04); border-radius: 3px; }
+    #board { right: 10px; top: 10px; font-size: 13px; }
+    .board-title { font-weight: 600; margin-bottom: 4px; }
+    #board th, #board td { padding: 1px 8px; text-align: right; }
+    #board th:first-child, #board td:first-child { text-align: left; }
   </style>
   <!-- Three.js from a pinned CDN version. No npm, no build step. -->
   <script type="importmap">
@@ -43,8 +56,11 @@
     <label><input type="checkbox" id="size-toggle"> size ×10</label>
     <!-- Filled in from /config when the server sends drone groups (python -m mindflight.demo). -->
     <div id="legend" hidden></div>
+    <div id="info" hidden></div>
     <div id="reset-row" hidden><button id="reset-button" type="button">restart (R)</button> <span id="loop-note"></span></div>
   </div>
+  <div id="charts" class="panel" hidden></div>
+  <div id="board" class="panel" hidden></div>
   <script type="module" src="/static/main.js"></script>
 </body>
 </html>
