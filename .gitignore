@@ -9,6 +9,8 @@ __pycache__/
 runs/
 checkpoints/
 *.pt
+# ...except the small trained policies we ship so `play` works without training first
+!policies/*.pt
 
 # OS / editors
 Thumbs.db
