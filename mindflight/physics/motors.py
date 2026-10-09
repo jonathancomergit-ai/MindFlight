@@ -12,23 +12,44 @@ import math
 
 import torch
 
+from mindflight.physics.device_cache import cached_on_device
 from mindflight.physics.params import CRAZYFLIE, CrazyflieParams
 
 # Each motor's (x, y) position as a multiple of d = arm / sqrt(2). Order is m0, m1, m2, m3.
-MOTOR_POSITION_SIGNS = torch.tensor(
-    [
-        [+1.0, -1.0],  # m0 front-right
-        [-1.0, -1.0],  # m1 back-right
-        [-1.0, +1.0],  # m2 back-left
-        [+1.0, +1.0],  # m3 front-left
-    ]
+# Kept as plain Python numbers too, so `motor_layout_on` can build the GPU copy without touching CPU tensors.
+MOTOR_POSITION_SIGN_ROWS = (
+    (+1.0, -1.0),  # m0 front-right
+    (-1.0, -1.0),  # m1 back-right
+    (-1.0, +1.0),  # m2 back-left
+    (+1.0, +1.0),  # m3 front-left
 )
+MOTOR_POSITION_SIGNS = torch.tensor(MOTOR_POSITION_SIGN_ROWS)  # (4, 2)
 
 # Each motor's (x, y) position in meters for the Crazyflie, shape (4, 2).
 MOTOR_POSITIONS = MOTOR_POSITION_SIGNS * CRAZYFLIE.arm_xy_m
 
 # Spin direction seen from above: +1 = counter-clockwise (CCW), -1 = clockwise (CW). Shape (4,).
-MOTOR_SPIN = torch.tensor([+1.0, -1.0, +1.0, -1.0])
+MOTOR_SPIN_VALUES = (+1.0, -1.0, +1.0, -1.0)
+MOTOR_SPIN = torch.tensor(MOTOR_SPIN_VALUES)
+
+
+@cached_on_device
+def motor_layout_on(
+    device: torch.device, dtype: torch.dtype, params: CrazyflieParams = CRAZYFLIE
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """The motor layout as tensors already on `device`: (motor_x_m, motor_y_m, spin), each shaped (4,).
+
+    motor_x_m, motor_y_m: each motor's position in meters, (±d, ±d) with d = arm / √2 (PLAN.md -> Motor layout).
+    spin: +1 for CCW, −1 for CW.
+
+    Made once per (device, dtype, params) and reused, so `rotor_wrench` never copies from the CPU during a step
+    (see `device_cache.py` for why that matters). Read-only: every caller shares these tensors.
+    """
+    d = params.arm_xy_m
+    motor_x_m = torch.tensor([x_sign * d for x_sign, _ in MOTOR_POSITION_SIGN_ROWS], device=device, dtype=dtype)
+    motor_y_m = torch.tensor([y_sign * d for _, y_sign in MOTOR_POSITION_SIGN_ROWS], device=device, dtype=dtype)
+    spin = torch.tensor(MOTOR_SPIN_VALUES, device=device, dtype=dtype)
+    return motor_x_m, motor_y_m, spin
 
 
 def motor_step(
@@ -67,10 +88,7 @@ def rotor_wrench(rpm: torch.Tensor, params: CrazyflieParams = CRAZYFLIE) -> tupl
     thrust_per_motor_n = params.kf_n_per_rpm2 * rpm**2  # (N, 4)
     drag_torque_per_motor_nm = params.km_nm_per_rpm2 * rpm**2  # (N, 4)
 
-    positions_m = (MOTOR_POSITION_SIGNS * params.arm_xy_m).to(device=rpm.device, dtype=rpm.dtype)  # (4, 2)
-    motor_x_m = positions_m[:, 0]
-    motor_y_m = positions_m[:, 1]
-    spin = MOTOR_SPIN.to(device=rpm.device, dtype=rpm.dtype)
+    motor_x_m, motor_y_m, spin = motor_layout_on(rpm.device, rpm.dtype, params)  # each (4,), already on rpm's device
 
     zeros = torch.zeros_like(rpm[:, 0])
     thrust_body = torch.stack([zeros, zeros, thrust_per_motor_n.sum(dim=1)], dim=1)
