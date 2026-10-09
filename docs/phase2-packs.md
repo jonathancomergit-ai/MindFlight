@@ -156,3 +156,17 @@ a dropped input acts like one that always shows its average.
 | grouped downwash | equals the all-pairs version; same in `step`; CUDA graph equals plain steps (GPU) |
 | real_world + sensors | the pack env still works with P3's options |
 | viewer | one grid spot per pack, slots and formation lines drawn |
+
+
+## Realistic sensors and drones (follow-up #46)
+
+`policies/real_pack.pt` started from `pack.pt` and trained 500 more iterations with `sensors=lighthouse real_world=true`
+(noisy, late estimates and randomized drones, docs/phase2-sensors.md). 1,000 packs of 6, downwash on, realistic conditions:
+
+| Brain | Formation waypoints | Drones collided | Packs with a collision |
+|---|---|---|---|
+| `pack.pt` (perfect data) | 13.8 % | 3.5 % | 10.6 % |
+| **`real_pack.pt`** | **93.9 %** (seeds 1 and 2) | 1.7–1.9 % | 5.2–5.6 % |
+
+The perfect-data pack brain falls apart with real sensors, the same story as P3. Still open: getting pack collisions
+under 2 %.
