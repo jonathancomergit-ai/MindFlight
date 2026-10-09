@@ -3,6 +3,8 @@
   "_source": "cf2x.urdf in utiasDSL/gym-pybullet-drones (Forster 2015, Landry 2015, Luis & Le Ny 2016); downwash coefficients from gym-pybullet-drones BaseAviary",
   "_assumed": "motor_time_constant_s (not in the source)",
   "_units": "SI: kg, m, kg*m^2, N/RPM^2, N*m/RPM^2, s; drag and ground-effect coefficients as in the URDF",
+  "_source_deploy": "radio interface numbers (firmware_*, hover_thrust_command, thrust_command_*, motor_volts_to_thrust_*, low_battery_v): bitcraze/crazyflie-firmware motors.c + platform_defaults_cf2.h (2.1+ propellers), cflib Commander.send_setpoint docs",
+  "_calibrate": "hover_thrust_command is computed from mass_kg; measure it on the real drone with python -m mindflight.deploy --calibrate-hover",
   "name": "crazyflie_2_1_plus",
   "mass_kg": 0.027,
   "arm_m": 0.0397,
@@ -22,5 +24,15 @@
   "downwash_coeff_3": -0.11,
   "collision_radius_m": 0.06,
   "collision_height_m": 0.025,
-  "motor_time_constant_s": 0.02
+  "motor_time_constant_s": 0.02,
+  "firmware_motor_thrust_max_n": 0.12,
+  "firmware_motor_thrust_min_n": 0.012817578393224994,
+  "hover_thrust_command": 36163,
+  "thrust_command_min": 10001,
+  "thrust_command_max": 60000,
+  "motor_volts_to_thrust_c0": -0.02476537915958403,
+  "motor_volts_to_thrust_c1": 0.06523793527519485,
+  "motor_volts_to_thrust_c2": -0.026792504967750107,
+  "motor_volts_to_thrust_c3": 0.006776789303971145,
+  "low_battery_v": 3.2
 }
