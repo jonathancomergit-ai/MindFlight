@@ -48,12 +48,20 @@ def test_catch_up_is_capped():
     assert source.env.step_count.max().item() <= 5  # at most 0.1 s of catch-up
 
 
-def test_scene_has_targets_for_hover():
+def test_scene_has_targets_for_hover_and_gates_for_gates():
     source, _ = make_source("hover")
     scene = source.scene()
     assert len(scene["targets"]) == 4
     target0 = (source.env.target[0] + source.offsets[0]).tolist()
     assert scene["targets"][0] == [round(v, 3) for v in target0]
+
+    source, _ = make_source("gates", n=3, layout="shared", difficulty=1.0, shared_course=True)
+    scene = source.scene()
+    assert len(scene["gates"]) == 6  # one shared course, drawn once
+    assert scene["gates"][0]["state"] == "next" and scene["gates"][1]["state"] == "later"
+    assert scene["gates"][0]["size"] == 0.5
+    # All 3 drones really do have the same course.
+    assert torch.equal(source.env.gate_centre[0], source.env.gate_centre[2])
 
 
 def test_set_policy_swaps_weights():

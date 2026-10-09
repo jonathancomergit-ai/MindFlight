@@ -134,3 +134,123 @@ def test_runs_on_gpu():
     obs, reward, done, _ = env.step(torch.zeros(4096, 4, device="cuda"))
     assert obs.is_cuda and reward.is_cuda and done.is_cuda
 
+
+def test_waypoint_targets_change_every_2_5_s_and_count_when_settled():
+    from mindflight.envs.waypoint import WaypointEnv
+
+    env = WaypointEnv(2, device="cpu", seed=1)
+    env.reset()
+    assert env.targets_per_episode == 4
+    first_targets = env.target.clone()
+    # Drone 0 sits on its target the whole time; drone 1 sits 20 cm away.
+    for i in range(env.hold_steps):
+        env.state[:, POS] = env.target
+        env.state[1, 0] += 0.2
+        env.state[:, VEL] = 0.0
+        env.step(torch.zeros(2, 4))
+    assert not torch.equal(env.target, first_targets)  # new targets after 2.5 s
+    assert env.targets_reached.tolist() == [1.0, 0.0]
+
+
+def test_waypoint_leaving_the_arena_is_a_crash():
+    from mindflight.envs.waypoint import WaypointEnv
+
+    env = WaypointEnv(1, device="cpu")
+    env.reset()
+    env.state[0, POS] = torch.tensor([3.2, 0.0, 1.0])
+    _, _, _, info = env.step(torch.zeros(1, 4))
+    assert info["terminated"].tolist() == [True]
+
+
+def straight_course(env, opening=1.0):
+    """Gates every 2 m along +x at 1 m height, facing +x."""
+    from mindflight.envs.gates import N_GATES
+
+    env.gate_centre[:] = 0.0
+    env.gate_centre[:, :, 0] = 2.0 * torch.arange(1, N_GATES + 1, dtype=torch.float32)
+    env.gate_centre[:, :, 2] = 1.0
+    env.gate_heading[:] = 0.0
+    env.gate_opening[:] = opening
+
+
+def test_gates_course_shapes_and_obs():
+    from mindflight.envs.gates import N_GATES, GatesEnv
+
+    env = GatesEnv(16, device="cpu", seed=2, difficulty=1.0)
+    obs = env.reset()
+    assert obs.shape == (16, 19 + 11)
+    assert env.gate_centre.shape == (16, N_GATES, 3)
+    assert env.gate_opening.tolist() == pytest.approx([0.5] * 16)
+    assert env.gate_centre[:, :, 2].min() >= 0.6 and env.gate_centre[:, :, 2].max() <= 2.0
+    # Neighbouring gates are 1.5–2.5 m apart sideways.
+    steps = (env.gate_centre[:, 1:, :2] - env.gate_centre[:, :-1, :2]).norm(dim=-1)
+    assert steps.min() >= 1.5 - 1e-4 and steps.max() <= 2.5 + 1e-4
+
+
+def teleport(env, x, y=0.0, z=1.0):
+    """Move drone 0 to (x, y, z) between two steps, so the env sees a straight path from prev_pos."""
+    env.state[0, POS] = torch.tensor([x, y, z])
+    env.state[0, VEL] = 0.0
+
+
+def test_gate_passed_through_the_middle():
+    from mindflight.envs.gates import GatesEnv
+
+    env = GatesEnv(1, device="cpu", difficulty=0.0)
+    env.reset()
+    straight_course(env)
+    env.prev_pos[0] = torch.tensor([1.9, 0.0, 1.0])
+    teleport(env, 2.1)
+    reward = env._reward()
+    assert env.passed.tolist() == [True] and env.hit_frame.tolist() == [False]
+    assert env.next_gate.tolist() == [1]
+    assert reward.item() > 9.9  # the pass bonus (no progress: 0.1 m from the centre before and after)
+
+
+def test_gate_frame_hit_is_a_crash_and_a_wide_miss_is_not():
+    from mindflight.envs.gates import GatesEnv
+
+    env = GatesEnv(1, device="cpu", difficulty=0.0)
+    env.reset()
+    straight_course(env, opening=1.0)
+    env.prev_pos[0] = torch.tensor([1.9, 0.48, 1.0])  # through the edge of the 1 m opening, on the frame
+    teleport(env, 2.1, y=0.48)
+    env._reward()
+    assert env.hit_frame.tolist() == [True] and env.passed.tolist() == [False]
+    assert env._crashed().tolist() == [True]
+
+    env.reset()
+    straight_course(env, opening=1.0)
+    env.prev_pos[0] = torch.tensor([1.9, 1.5, 1.0])  # well wide of the gate
+    teleport(env, 2.1, y=1.5)
+    env._reward()
+    assert env.hit_frame.tolist() == [False] and env.passed.tolist() == [False]
+    assert env.next_gate.tolist() == [0]
+
+
+def test_all_gates_in_order_finishes():
+    from mindflight.envs.gates import N_GATES, GatesEnv
+
+    env = GatesEnv(1, device="cpu", difficulty=0.0)
+    env.reset()
+    straight_course(env)
+    for k in range(N_GATES):
+        env.prev_pos[0] = torch.tensor([2.0 * (k + 1) - 0.1, 0.0, 1.0])
+        teleport(env, 2.0 * (k + 1) + 0.1)
+        env._reward()
+    assert env.next_gate.tolist() == [N_GATES]
+    assert env._finished().tolist() == [True]
+
+
+def test_curriculum_climbs_when_success_is_high():
+    from mindflight.envs.gates import GatesEnv
+
+    env = GatesEnv(4, device="cpu")
+    assert env.difficulty == 0.0
+    for _ in range(20):
+        env.update_curriculum({"episode_success": 1.0})
+    assert env.difficulty > 0.0
+    fixed = GatesEnv(4, device="cpu", difficulty=0.3)
+    for _ in range(20):
+        fixed.update_curriculum({"episode_success": 1.0})
+    assert fixed.difficulty == 0.3
