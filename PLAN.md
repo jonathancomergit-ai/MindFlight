@@ -113,7 +113,10 @@ Each level ends with something you can **see** in the viewer and a short `docs/l
 | 5 | **Sturdy** | Survives wind gusts and ±20 % mass | Domain randomization |
 | 6 | **Race** | Best policies race in the viewer | Evaluation, putting it together |
 
-Later physics upgrades (only after Level 1 works): body drag, ground effect, downwash.
+Later physics upgrades (only after Level 1 works): body drag, ground effect, downwash. **All three are in
+`physics/aero.py`** (drag and ground effect used in Level 5; downwash is a race option, `--downwash`).
+
+Status (2026-10-09): **all levels done**. Results and how to run each one: README "Where it stands".
 
 ---
 

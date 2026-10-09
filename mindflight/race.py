@@ -16,6 +16,7 @@ import torch
 import uvicorn
 
 from mindflight.envs.race import RaceEnv
+from mindflight.physics.aero import DroneVariation
 from mindflight.rl.train import load_policy
 from mindflight.viewer.__main__ import HOST
 from mindflight.viewer.policy_source import PolicySource
@@ -23,8 +24,8 @@ from mindflight.viewer.server import create_app
 
 DEFAULT_ENTRANTS = [
     ("racer", "policies/race.pt", "gates policy, then trained to hurry"),
-    ("gates", "policies/gates.pt", "gates policy (Level 3)"),
-    ("rookie", "policies/gates_rookie.pt", "gates policy that only saw easy courses"),
+    ("gates", "policies/gates.pt", "Level 3 gates policy: careful"),
+    ("daredevil", "policies/daredevil.pt", "only ever saw easy courses: fast, crashes a lot"),
 ]
 COLORS = ["#6fdc8c", "#ff8389", "#4ea8ff", "#c08cff"]  # the viewer's group colours (main.js GROUP_COLORS), in order
 ROUND_S = 20.0
@@ -50,9 +51,13 @@ class Entrant:
 class RaceSource(PolicySource):
     """A PolicySource that runs rounds: one try per drone, frozen in place when it finishes or crashes."""
 
-    def __init__(self, entrants: list[Entrant], models: list, drones_each: int = 2, device: str = "cpu"):
+    def __init__(
+        self, entrants: list[Entrant], models: list, drones_each: int = 2, device: str = "cpu", downwash: bool = False
+    ):
         n = drones_each * len(entrants)
         env = RaceEnv(n, device=device, shared_course=True, seed=int(torch.randint(0, 2**31 - 1, ()).item()))
+        if downwash:  # the racers share the air: a drone flying over another pushes it down (physics/aero.py)
+            env.variation = DroneVariation(world_id=torch.zeros(n, dtype=torch.long, device=env.device), downwash=True)
         policy_of_drone = torch.arange(n) // drones_each
         super().__init__(env, models, policy_of_drone=policy_of_drone, layout="shared")
         self.entrants = entrants
@@ -97,6 +102,10 @@ class RaceSource(PolicySource):
                 self.done[i] = True
             if self.done.all() or self.round_time_s >= ROUND_S:
                 self.finish_round()
+
+    def racing_mask(self) -> torch.Tensor:
+        """Only drones still on their try this round (finished and crashed drones are frozen for display)."""
+        return (~self.done).to(self.env.device)
 
     def restart(self) -> None:
         """The page's R key: a new round on a new course (scores are kept)."""
@@ -161,11 +170,14 @@ def main() -> None:
     parser.add_argument("--entrant", action="append", metavar="NAME=PATH", help="a policy to race (repeat)")
     parser.add_argument("--drones-each", type=int, default=2)
     parser.add_argument("--port", type=int, default=8000)
+    parser.add_argument(
+        "--downwash", action="store_true", help="drones flying over each other push each other down (not trained for)"
+    )
     args = parser.parse_args()
 
     entrants = parse_entrants(args.entrant)
     models = [load_policy(e.path, "cpu")[0] for e in entrants]
-    source = RaceSource(entrants, models, drones_each=args.drones_each)
+    source = RaceSource(entrants, models, drones_each=args.drones_each, downwash=args.downwash)
     source.info_lines = ["Race: each policy flies 2 drones on the same course. One try per round. Fastest lap wins."]
     groups = [
         {

@@ -9,13 +9,27 @@ python -m mindflight.race          # then open http://127.0.0.1:8000/
 Each policy flies 2 drones on the same random 6-gate course (hardest setting). One try per round: finish or crash.
 The fastest lap wins the round, and a new course appears. The table in the corner keeps score.
 
-**Result:** RESULT_LINE
+**Result:** three policies race live with a leaderboard. Over a 100-round tournament
+(`python scripts/race_tournament.py 100`) the **racer won 96 rounds**, gates 4, daredevil 0:
+
+| Policy | Round wins | Finishes (of 200) | Crashes | Best lap | Average lap |
+|---|---|---|---|---|---|
+| racer | **96** | 192 | 8 | 2.94 s | **3.36 s** |
+| gates | 4 | 188 | 12 | 3.16 s | 3.68 s |
+| daredevil | 0 | 0 | 200 | – | – |
 
 ---
 
 ## The racers
 
-RACERS_TABLE
+| Racer | Brain | What it is |
+|---|---|---|
+| **racer** | `policies/race.pt` | the gates brain, then 1,450 more iterations on the race reward (below) |
+| **gates** | `policies/gates.pt` | the Level 3 brain: careful |
+| **daredevil** | `policies/daredevil.pt` | an early gates brain that only ever saw easy courses (difficulty 0.45): quick when it survives, which is rarely |
+
+Want different racers? `python -m mindflight.race --entrant fast=policies/race.pt --entrant mine=runs/race/<run>/snapshots/it00300.pt`.
+Every training run keeps a snapshot at each test, so you can race a brain against its younger self.
 
 ## Teaching a drone to hurry
 
@@ -44,7 +58,18 @@ and the course difficulty keeps changing. To compare policies fairly we:
 `python -m mindflight.evaluate <policies...>` does exactly that and prints one row per policy.
 The race view is the fun version of the same idea.
 
-EVAL_TABLE
+The three racers on the same 1,000 race courses:
+
+| Policy | Finished | Crashed | Average lap (finished laps only) |
+|---|---|---|---|
+| racer | 95.1 % | 4.6 % | **3.37 s** |
+| gates | 95.8 % | 4.1 % | 3.72 s |
+| daredevil | 0.2 % | 59.7 % | 2.97 s (2 laps) |
+
+The racer is about 10 % faster for almost the same finish rate. Racing snapshots during training showed the trade:
+laps fell steadily (3.68 s → 3.37 s) while the finish rate stayed between 92 and 96 %. The daredevil's rare laps
+are the fastest of all, and that is the point of the "finished laps only" rule: an average that ignored crashes
+would crown it.
 
 ## Putting it together
 

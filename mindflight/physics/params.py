@@ -25,6 +25,11 @@ class CrazyflieParams:
     drag_coeff_xy: float = 9.1785e-7
     drag_coeff_z: float = 10.311e-7
     ground_effect_coeff: float = 11.36859
+    # Downwash between drones (Level 6 race option). From gym-pybullet-drones BaseAviary (DW_COEFF_1..3), not the
+    # URDF; an empirical fit, used as-is. See physics/aero.py -> downwash_world for the formula and its limits.
+    downwash_coeff_1: float = 2267.18
+    downwash_coeff_2: float = 0.16
+    downwash_coeff_3: float = -0.11
     collision_radius_m: float = 0.06
     collision_height_m: float = 0.025
     motor_time_constant_s: float = 0.02  # ASSUMED: not in the source, revisit

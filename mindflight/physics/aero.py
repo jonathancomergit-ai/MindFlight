@@ -49,6 +49,7 @@ class DroneVariation:
     wind_mps: wind velocity, world frame (m/s), (N, 3)
     drag: apply rotor drag (needed for wind to do anything)
     ground_effect: apply ground effect
+    world_id, downwash: apply downwash between drones that share a world (see `downwash_world`)
     """
 
     mass_scale: torch.Tensor | None = None
@@ -57,6 +58,8 @@ class DroneVariation:
     wind_mps: torch.Tensor | None = None
     drag: bool = False
     ground_effect: bool = False
+    world_id: torch.Tensor | None = None  # (N,) long: drones with the same id share the air (for downwash)
+    downwash: bool = False
 
 
 @cached_on_device
@@ -104,6 +107,37 @@ def ground_effect_thrust(
     return torch.where(upright > 0, extra, torch.zeros_like(extra))
 
 
+def downwash_world(
+    position_m: torch.Tensor, world_id: torch.Tensor, params: CrazyflieParams = CRAZYFLIE, min_gap_m: float = 0.1
+) -> torch.Tensor:
+    """Push from the air thrown down by drones flying above, (N, 3) in N (only the z part is non-zero).
+
+    For every pair in the same world where drone j is above drone i (Δz = z_j − z_i > 0, Δxy = sideways distance):
+
+        F_z on i = −α · exp(−½ · (Δxy / β)²),   α = c1 · (r_prop / (4 · Δz))²,   β = c2 · Δz + c3
+
+    α is how hard the column of air pushes (weaker the further below you are), and the Gaussian says how wide the
+    column is (β grows with Δz). This is the empirical fit from gym-pybullet-drones, used as-is. It is only sensible
+    when the drones are a fair way apart: Δz is clipped to at least `min_gap_m` (10 cm) and |β| to at least 2 cm,
+    because the raw formula blows up as Δz → 0 and its β crosses zero near Δz = 0.69 m. Even at Δz = 10 cm the raw
+    α is 7.5 N, about 28 × a Crazyflie's weight, so the total push on a drone is capped at its own weight (ASSUMED:
+    a column of air from above can cancel the drone's lift, not throw it at the floor at several g).
+
+    Cost: every pair of drones, N × N. Fine for a race of a few drones; too much for 4,096 training drones, which
+    each fly alone in their own world anyway.
+    """
+    dz = position_m[None, :, 2] - position_m[:, None, 2]  # (N, N): z_j − z_i, j = column
+    dxy = (position_m[None, :, :2] - position_m[:, None, :2]).norm(dim=-1)
+    above = (dz > 0) & (world_id[None, :] == world_id[:, None])
+    dz = dz.clamp_min(min_gap_m)
+    alpha = params.downwash_coeff_1 * (params.prop_radius_m / (4 * dz)) ** 2
+    beta = params.downwash_coeff_2 * dz + params.downwash_coeff_3
+    beta = torch.where(beta.abs() < 0.02, torch.full_like(beta, 0.02), beta)
+    push = torch.where(above, alpha * torch.exp(-0.5 * (dxy / beta) ** 2), torch.zeros_like(dz)).sum(dim=1)
+    push = push.clamp(max=params.weight_n)  # ASSUMED cap, see above
+    return torch.stack((torch.zeros_like(push), torch.zeros_like(push), -push), dim=1)
+
+
 def aero_force_world(
     quat: torch.Tensor,
     position_m: torch.Tensor,
@@ -113,11 +147,13 @@ def aero_force_world(
     variation: DroneVariation,
     params: CrazyflieParams = CRAZYFLIE,
 ) -> torch.Tensor:
-    """The extra forces `variation` switches on, summed, in the world frame, (N, 3) in N: drag (with wind) and
-    ground effect. Zeros if neither is on. Called by `dynamics.step`."""
+    """The extra forces `variation` switches on, summed, in the world frame, (N, 3) in N: drag (with wind),
+    downwash and ground effect. Zeros if none is on. Called by `dynamics.step`."""
     force = torch.zeros_like(velocity_mps)
     if variation.drag:
         force = force + rotor_drag_world(quat, velocity_mps, rpm, variation.wind_mps, params)
+    if variation.downwash and variation.world_id is not None:
+        force = force + downwash_world(position_m, variation.world_id, params)
     if variation.ground_effect:
         x, y = quat[:, 1], quat[:, 2]
         upright = 1 - 2 * (x * x + y * y)  # R_zz = cos(tilt)

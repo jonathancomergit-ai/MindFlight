@@ -42,3 +42,12 @@ def test_a_round_ends_and_scores_when_every_drone_is_done():
     assert total == 6  # every drone had exactly one try
     poses = race.frame(0.0)
     assert poses.shape == (6, 7)
+
+
+def test_race_with_downwash_runs():
+    entrants = [Entrant(f"p{i}", f"p{i}.pt") for i in range(2)]
+    obs_size = RaceEnv(1, device="cpu").obs_size
+    race = RaceSource(entrants, [ActorCritic(obs_size, 4) for _ in entrants], downwash=True)
+    assert race.env.variation.downwash
+    race.advance(10)
+    assert torch.isfinite(race.env.state).all()

@@ -101,3 +101,37 @@ def test_ground_effect_lifts_a_drone_near_the_floor_only():
     high = fly(DroneVariation(ground_effect=True), seconds=0.3, height=1.5)
     assert near[0, 2] > 0.06  # pushed up off the floor
     assert abs(high[0, 2].item() - 1.5) < 1e-3  # nothing at 1.5 m
+
+
+def test_downwash_pushes_down_on_the_drone_below_only():
+    from mindflight.physics.aero import downwash_world
+
+    pos = torch.tensor([[0.0, 0.0, 1.0], [0.0, 0.0, 2.0], [3.0, 0.0, 1.0]])
+    same_world = torch.tensor([0, 0, 0])
+    force = downwash_world(pos, same_world)
+    assert force[0, 2] < 0  # under drone 1: pushed down
+    assert force[1, 2] == 0  # nothing above drone 1
+    assert force[2, 2].abs() < 1e-9  # 3 m to the side: outside the air column
+    assert force[:, :2].abs().max() == 0
+    # Formula check for drone 0: Δz = 1, Δxy = 0  ->  α = c1 (r / 4)², times exp(0) = 1.
+    expected = CRAZYFLIE.downwash_coeff_1 * (CRAZYFLIE.prop_radius_m / 4) ** 2
+    assert -force[0, 2].item() == pytest.approx(expected, rel=1e-5)
+    # Different worlds don't feel each other.
+    assert downwash_world(pos, torch.tensor([0, 1, 2])).abs().max() == 0
+
+
+def test_downwash_in_step_sinks_the_lower_drone():
+    rpm = torch.full((2, 4), CRAZYFLIE.hover_rpm)
+    state = make_state(2, "cpu", pos=torch.tensor([[0.0, 0.0, 1.0], [0.0, 0.0, 2.0]]), rpm=rpm)
+    variation = DroneVariation(world_id=torch.tensor([0, 0]), downwash=True)
+    for _ in range(100):
+        state = step(state, rpm, variation=variation)
+    assert state[0, 2] < 0.99 and abs(state[1, 2].item() - 2.0) < 1e-4
+
+
+def test_downwash_is_capped_at_one_drone_weight():
+    from mindflight.physics.aero import downwash_world
+
+    pos = torch.tensor([[0.0, 0.0, 1.0], [0.0, 0.0, 1.05]])  # 5 cm apart, straight above
+    force = downwash_world(pos, torch.tensor([0, 0]))
+    assert -force[0, 2].item() == pytest.approx(CRAZYFLIE.weight_n)

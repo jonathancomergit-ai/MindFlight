@@ -49,13 +49,17 @@ class SturdyEnv(WaypointEnv):
         device: str | None = None,
         seed: int = 0,
         randomize: bool = True,
+        gust_scale: float = 1.0,
     ):
+        """randomize: False = standard drone in still air. gust_scale: multiply the gusts and steady wind (2 = a stress
+        test with twice the wind it trained on)."""
         super().__init__(n_envs, episode_s, device, seed)
         self.randomize = randomize
+        self.gust_scale = gust_scale
         ones = torch.ones(n_envs, device=self.device)
         self.steady_wind = torch.zeros(n_envs, 3, device=self.device)
         self.gust = torch.zeros(n_envs, 3, device=self.device)
-        self.gust_sigma = torch.tensor(GUST_SIGMA_MPS, device=self.device)
+        self.gust_sigma = gust_scale * torch.tensor(GUST_SIGMA_MPS, device=self.device)
         self.variation = DroneVariation(
             mass_scale=ones.clone(),
             thrust_scale=ones.clone(),
@@ -74,7 +78,7 @@ class SturdyEnv(WaypointEnv):
         self.variation.thrust_scale[ids] = self.uniform(n, 0.9, 1.1)
         self.variation.motor_tau_scale[ids] = self.uniform(n, 0.7, 1.5)
         direction = self.uniform(n, -math.pi, math.pi)
-        speed = self.uniform(n, 0.0, STEADY_WIND_MAX_MPS)
+        speed = self.uniform(n, 0.0, STEADY_WIND_MAX_MPS * self.gust_scale)
         self.steady_wind[ids, 0] = speed * torch.cos(direction)
         self.steady_wind[ids, 1] = speed * torch.sin(direction)
         self.gust[ids] = 0.0

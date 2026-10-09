@@ -163,7 +163,7 @@ def step(
             mass_kg = params.mass_kg * variation.mass_scale[:, None]  # (N, 1)
             inertia_kgm2 = inertia_kgm2 * variation.mass_scale[:, None]  # (N, 3): same shape, heavier
     force_world_n = quat_rotate(quat, thrust_body_n)
-    if variation is not None and (variation.drag or variation.ground_effect):
+    if variation is not None and (variation.drag or variation.ground_effect or variation.downwash):
         force_world_n = force_world_n + aero_force_world(
             quat, position_m, velocity_mps, rpm, thrust_body_n, variation, params
         )

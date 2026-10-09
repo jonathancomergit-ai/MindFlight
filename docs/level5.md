@@ -5,12 +5,14 @@
 **Done when:** with random mass (±20 %) and gusts, at least 95 % of flights survive and keep tracking targets,
 and a policy trained *without* the randomness does measurably worse.
 
-**Result:** RESULT_LINE
+**Result:** **97.4 %** of targets reached in gusty wind on random drones, **0 crashes**. The same task flown by
+the Level 2 policy (trained in still air on one perfect drone): 84.6 %.
 
 ```
 python -m mindflight.play --policy policies/sturdy.pt          # 36 drones, each its own weight and wind
 python -m mindflight.train --task sturdy --init policies/waypoint.pt --reset-std 0.15
-python -m mindflight.evaluate policies/sturdy.pt policies/waypoint.pt --task sturdy
+python -m mindflight.evaluate policies/waypoint.pt policies/sturdy.pt --task sturdy
+python -m mindflight.evaluate policies/waypoint.pt policies/sturdy.pt --task sturdy --env gust_scale=2   # stress test
 ```
 
 ---
@@ -60,7 +62,22 @@ gust ← gust − gust · dt / τ + σ · √(2 · dt / τ) · noise          τ
 
 ## The experiment
 
-FINDINGS
+Two policies, the same 1,000 test flights (4,000 targets) in three kinds of weather:
+
+| Policy | Calm air, standard drone | Training-strength wind, random drones | **Twice** that wind |
+|---|---|---|---|
+| `waypoint.pt` (Level 2: one perfect drone, still air) | 99.3 % | 84.6 % | 56.0 % |
+| `sturdy.pt` (Level 5: randomized) | **99.8 %** | **97.4 %** | **77.8 %** |
+
+- In calm air they are equal: being trained for rough weather cost nothing.
+- In the wind it was trained for, the randomized policy misses 1 target in 40 instead of 1 in 6.
+- In wind *twice as strong as anything it ever saw*, it still does much better. It didn't memorize the wind; it
+  learned to correct for being pushed.
+- Neither one crashes (≤ 0.3 %). The wind doesn't knock them down; it pushes them off target.
+
+The sturdy policy started from `waypoint.pt` (`--init`, spread reset to 0.15) and trained for 800 iterations.
+
+![Sturdy learning curves](img/level5_curves.png)
 
 ## Tests
 
