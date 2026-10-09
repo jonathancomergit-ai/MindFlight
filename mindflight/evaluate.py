@@ -42,7 +42,13 @@ def main() -> None:
     overrides = {}
     for item in args.env:
         key, value = item.split("=", 1)
-        overrides[key] = value.lower() == "true" if value.lower() in ("true", "false") else float(value)
+        if value.lower() in ("true", "false"):
+            overrides[key] = value.lower() == "true"
+        else:
+            try:
+                overrides[key] = float(value)
+            except ValueError:
+                overrides[key] = value  # e.g. drone=my_drone
 
     print(f"{'policy':<34} {'task':<10} {'success':>8} {'crashed':>8} {'return':>8} {'length':>7} {'lap':>7}")
     for path in args.policies:

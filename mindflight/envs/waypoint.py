@@ -44,8 +44,8 @@ class WaypointEnv(HoverEnv):
     precision_bonus = 0.5  # the last 30 cm count extra, so it settles right on the target
     inside_bonus = 0.5  # and being inside the 10 cm success radius pays a flat extra
 
-    def __init__(self, n_envs: int, episode_s: float = 10.0, device: str | None = None, seed: int = 0):
-        super().__init__(n_envs, episode_s, device, seed)
+    def __init__(self, n_envs: int, episode_s: float = 10.0, device: str | None = None, seed: int = 0, **options):
+        super().__init__(n_envs, episode_s, device, seed, **options)
         self.hold_steps = round(TARGET_HOLD_S / 0.02)
         self.settle_steps = round(SETTLE_S / 0.02)
         self.targets_per_episode = max(1, self.max_steps // self.hold_steps)

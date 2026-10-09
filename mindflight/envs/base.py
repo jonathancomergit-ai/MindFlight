@@ -34,7 +34,7 @@ import torch
 from mindflight.physics.aero import DroneVariation
 from mindflight.physics.dynamics import OMEGA, PHYSICS_DT_S, POS, QUAT, RPM, STATE_SIZE, VEL, step
 from mindflight.physics.fast import CudaGraphStepper
-from mindflight.physics.params import CRAZYFLIE
+from mindflight.physics.params import CRAZYFLIE, CrazyflieParams, load_drone
 from mindflight.physics.rotations import quat_from_axis_angle, quat_multiply, quat_to_matrix
 
 POLICY_HZ = 50
@@ -47,9 +47,9 @@ POLICY_DT_S = SUBSTEPS * PHYSICS_DT_S  # 0.02 s
 ACTION_RPM_SPAN = 0.5
 
 
-def action_to_rpm(action: torch.Tensor) -> torch.Tensor:
+def action_to_rpm(action: torch.Tensor, params: CrazyflieParams = CRAZYFLIE) -> torch.Tensor:
     """Policy action (N, 4) in [−1, 1] -> motor command (N, 4) in RPM: hover_rpm · (1 + 0.5 · a)."""
-    return CRAZYFLIE.hover_rpm * (1.0 + ACTION_RPM_SPAN * action.clamp(-1.0, 1.0))
+    return params.hover_rpm * (1.0 + ACTION_RPM_SPAN * action.clamp(-1.0, 1.0))
 
 
 def random_unit_vectors(n: int, generator: torch.Generator, device) -> torch.Tensor:
@@ -80,7 +80,17 @@ class DroneEnv:
     # physics, ~50× faster. Set False to use the plain readable `step` loop instead.
     fast_physics = True
 
-    def __init__(self, n_envs: int, episode_s: float = 10.0, device: str | None = None, seed: int = 0):
+    def __init__(
+        self,
+        n_envs: int,
+        episode_s: float = 10.0,
+        device: str | None = None,
+        seed: int = 0,
+        drone: "str | CrazyflieParams | None" = None,
+    ):
+        """drone: which drone file to fly (mindflight/drones/<name>.json); None = the Crazyflie 2.1+."""
+        self.params = load_drone(drone)
+        self.drone = self.params.name
         if device is None:
             device = "cuda" if torch.cuda.is_available() else "cpu"
         self.n_envs = n_envs
@@ -197,7 +207,7 @@ class DroneEnv:
         """Fresh episode for drones `ids`: zero the counters, motors at hover, then the task places them."""
         self.state[ids] = 0.0
         self.state[ids, QUAT.start] = 1.0
-        self.state[ids, RPM] = CRAZYFLIE.hover_rpm
+        self.state[ids, RPM] = self.params.hover_rpm
         self.action[ids] = 0.0
         self.prev_action[ids] = 0.0
         self.step_count[ids] = 0
@@ -210,13 +220,18 @@ class DroneEnv:
         if self.fast_physics and self.device.type == "cuda":
             if self.stepper is None:
                 self.stepper = CudaGraphStepper(
-                    self.n_envs, self.device, substeps=SUBSTEPS, compile=True, variation=self.variation
+                    self.n_envs,
+                    self.device,
+                    substeps=SUBSTEPS,
+                    params=self.params,
+                    compile=True,
+                    variation=self.variation,
                 )
             self.state = self.stepper.run(self.state, rpm_cmd, variation=self.variation)
             return
         state = self.state
         for _ in range(SUBSTEPS):
-            state = step(state, rpm_cmd, variation=self.variation)
+            state = step(state, rpm_cmd, params=self.params, variation=self.variation)
         self.state = state
 
     def step(self, action: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, dict]:
@@ -231,7 +246,7 @@ class DroneEnv:
         """
         self.prev_action = self.action
         self.action = action.clamp(-1.0, 1.0)
-        self.physics(action_to_rpm(self.action))
+        self.physics(action_to_rpm(self.action, self.params))
         self.step_count += 1
 
         reward = self._reward()

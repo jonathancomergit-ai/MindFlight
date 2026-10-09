@@ -42,8 +42,8 @@ class HoverEnv(DroneEnv):
     precision_bonus = 0.0  # extra reward for being very close: bonus · max(0, 1 − distance / 0.3 m)
     inside_bonus = 0.0  # extra reward for every step inside the 10 cm success radius
 
-    def __init__(self, n_envs: int, episode_s: float = 10.0, device: str | None = None, seed: int = 0):
-        super().__init__(n_envs, episode_s, device, seed)
+    def __init__(self, n_envs: int, episode_s: float = 10.0, device: str | None = None, seed: int = 0, **options):
+        super().__init__(n_envs, episode_s, device, seed, **options)
         self.target = torch.zeros(n_envs, 3, device=self.device)
         self.target[:, 2] = TARGET_HEIGHT_M
         # Furthest the drone got from the target during the second half of its episode (m).

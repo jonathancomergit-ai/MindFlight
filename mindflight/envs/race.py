@@ -29,5 +29,8 @@ class RaceEnv(GatesEnv):
         seed: int = 0,
         difficulty: float = 1.0,
         shared_course: bool = False,
+        **options,
     ):
-        super().__init__(n_envs, episode_s, device, seed, difficulty=difficulty, shared_course=shared_course)
+        super().__init__(
+            n_envs, episode_s, device, seed, difficulty=difficulty, shared_course=shared_course, **options
+        )

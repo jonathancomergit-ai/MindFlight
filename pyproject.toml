@@ -20,5 +20,8 @@ dev = ["pytest>=8", "httpx>=0.27"]  # httpx: FastAPI TestClient
 [tool.setuptools.packages.find]
 include = ["mindflight*"]
 
+[tool.setuptools.package-data]
+mindflight = ["drones/*.json", "viewer/static/*"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]

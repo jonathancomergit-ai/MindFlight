@@ -69,10 +69,11 @@ class GatesEnv(DroneEnv):
         difficulty: float | None = None,
         start_difficulty: float = 0.0,
         shared_course: bool = False,
+        **options,
     ):
         """difficulty: None = curriculum (start at 0, climb as it learns); a number = fixed (evaluation).
         shared_course: every drone flies the same course (the race and the viewer); they line up side by side."""
-        super().__init__(n_envs, episode_s, device, seed)
+        super().__init__(n_envs, episode_s, device, seed, **options)
         # difficulty None = curriculum (start at 0 and climb); a number = fixed (used for evaluation).
         self.fixed_difficulty = difficulty is not None
         # start_difficulty: where the curriculum starts (for carrying on from an earlier run's policy).

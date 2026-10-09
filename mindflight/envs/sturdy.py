@@ -50,10 +50,11 @@ class SturdyEnv(WaypointEnv):
         seed: int = 0,
         randomize: bool = True,
         gust_scale: float = 1.0,
+        **options,
     ):
         """randomize: False = standard drone in still air. gust_scale: multiply the gusts and steady wind (2 = a stress
         test with twice the wind it trained on)."""
-        super().__init__(n_envs, episode_s, device, seed)
+        super().__init__(n_envs, episode_s, device, seed, **options)
         self.randomize = randomize
         self.gust_scale = gust_scale
         ones = torch.ones(n_envs, device=self.device)

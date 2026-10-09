@@ -27,6 +27,7 @@ def main() -> None:
     parser.add_argument(
         "--set", nargs="*", default=[], metavar="KEY=VALUE", help="override PPOConfig fields, e.g. --set init_std=0.3"
     )
+    parser.add_argument("--drone", default=None, help="drone file to fly (mindflight/drones/<name>.json or a path)")
     parser.add_argument("--env", nargs="*", default=[], metavar="KEY=VALUE", help="task options, e.g. --env randomize=false")
     args = parser.parse_args()
 
@@ -41,6 +42,8 @@ def main() -> None:
                 env_kwargs[key] = float(value) if "." in value else int(value)
             except ValueError:
                 env_kwargs[key] = value
+    if args.drone:
+        env_kwargs["drone"] = args.drone
 
     overrides = {}
     for item in args.set:

@@ -49,6 +49,7 @@ def main() -> None:
     parser.add_argument("--n", type=int, default=None, help="number of drones (default depends on the task)")
     parser.add_argument("--port", type=int, default=8000, help="port on 127.0.0.1 (default 8000)")
     parser.add_argument("--device", default="cpu", help="cpu (default; fastest for a few dozen drones) or cuda")
+    parser.add_argument("--drone", default=None, help="fly this drone file instead of the one it trained on")
     parser.add_argument("--speed", type=float, default=1.0, help="sim seconds per real second (0.25 = slow motion)")
     args = parser.parse_args()
 
@@ -56,7 +57,10 @@ def main() -> None:
     task = checkpoint["task"]
     layout, default_n, spacing_m, round_s = SHOW.get(task, ("grid", 16, 4.0, None))
     n = args.n or default_n
-    env = env_for_showing(task, checkpoint.get("env_kwargs", {}), n, args.device)
+    env_kwargs = dict(checkpoint.get("env_kwargs", {}))
+    if args.drone:
+        env_kwargs["drone"] = args.drone
+    env = env_for_showing(task, env_kwargs, n, args.device)
     source = PolicySource(env, model, layout=layout, spacing_m=spacing_m, speed=args.speed, round_s=round_s)
 
     evaluation = checkpoint.get("eval", {})
