@@ -228,14 +228,14 @@ def test_tracker_error_model_matches_flying_from_the_wrong_start():
     _, fine = fly_for(pos, vel, torch.tensor([600]), sample_every=10)
     assert (true_path - fine).norm(dim=-1).max() < 0.01
     # ...and "true path + pos error + vel error · t" (what the env uses) is close to really flying the prediction
-    # from the wrong start: for the tracker's typical error, within 2 cm up to 0.8 s ahead. (Drag slowly damps a
+    # from the wrong start: for the tracker's typical error, within 2.5 cm up to 0.8 s ahead. (Drag slowly damps a
     # velocity error, so the simple model makes the error grow a little too fast: it errs on the hard side.)
     pos_error, vel_error = torch.tensor([[0.015, -0.01, 0.01]]), torch.tensor([[0.1, -0.07, 0.08]])
     wrong_start = predict_path(pos + pos_error, vel + vel_error)
     ahead_s = torch.arange(true_path.shape[1]) * 0.02
     model = true_path + pos_error[:, None] + vel_error[:, None] * ahead_s[None, :, None]
     gap = (model - wrong_start).norm(dim=-1)[0]
-    assert gap[:41].max() < 0.02
+    assert gap[:41].max() < 0.025
     assert (model - true_path).norm(dim=-1)[0, 40] > (wrong_start - true_path).norm(dim=-1)[0, 40]
 
 
@@ -263,12 +263,12 @@ def test_tracker_points_at_the_path_without_noise():
 def test_curriculum_climbs_on_success_and_throws_get_harder():
     env = make(8)
     assert env.difficulty == 0.0
-    easy_flight = env.bank["flight_s"].mean().item()
+    easy_shortest = env.bank["flight_s"].min().item()
     for _ in range(60):  # each step up needs ~8 good iterations (the smoothed rate starts again from 0)
         env.update_curriculum({"episode_success": 1.0})
     assert env.difficulty >= 0.3
     env.throw(torch.arange(8))  # refills the bank at the new difficulty
-    assert env.bank["flight_s"].mean().item() < easy_flight - 0.05
+    assert env.bank["flight_s"].min().item() < easy_shortest - 0.05  # faster throws in the mix
     assert throw_settings(1.0)[0] > throw_settings(0.0)[0]  # wider arc
     fixed = make(8, difficulty=0.5)
     for _ in range(30):

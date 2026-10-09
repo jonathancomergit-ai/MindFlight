@@ -65,12 +65,12 @@ Reward per step (50 per second):
       − 0.2 · min(distance to the guard point, 5 m)          go back and wait (gently: see the doc)
     + 20 for an interception,  − 10 when the ball reaches the person (or the floor)
     + 10 · max(0, 1 − closest the ball came / 0.5 m), once, when a throw ends: near misses earn a little, so there is
-      a slope toward catching (without it the policies lost their catches again; see the doc)
+      a slope toward catching instead of a cliff at 9.5 cm
     − small spin and twitch terms
     crash: −30 and the episode ends
 
-**Curriculum** (like Level 3's gates): `difficulty` starts at 0 (a narrow ±10° arc, 1.1–1.3 s lobs) and goes
-up 0.05 every time the smoothed interception rate passes 80 %, to 1 (`HARD_ARC_DEG`, `HARD_FLIGHT_S`).
+**Curriculum** (like Level 3's gates): `difficulty` starts at 0 (a narrow ±10° arc, 1.1–1.3 s flights) and goes
+up 0.05 every time the smoothed interception rate passes 80 %, to 1 (±45°, 0.8–1.4 s: fast throws and high lobs).
 """
 
 import math
@@ -111,7 +111,8 @@ FIRST_THROW_S = (1.0, 1.5)  # first throw of an episode
 EASY_ARC_DEG = 10.0  # difficulty 0: the thrower is within ±10° of straight ahead
 HARD_ARC_DEG = 45.0  # difficulty 1
 EASY_FLIGHT_S = (1.1, 1.3)  # difficulty 0: ball in the air this long (s). Longer = a high lob, not a slower throw
-HARD_FLIGHT_S = (0.9, 1.1)  # difficulty 1
+HARD_FLIGHT_S = (0.8, 1.4)  # difficulty 1: fast throws and high lobs mixed (a brain trained on 0.9–1.1 s only
+# chased lobs into the 0.5 m safety zone: see the doc)
 MAX_FLIGHT_S = max(EASY_FLIGHT_S[1], HARD_FLIGHT_S[1])
 PATH_POINTS = round(MAX_FLIGHT_S / POLICY_DT_S) + 1  # the stored path: one point per policy step
 

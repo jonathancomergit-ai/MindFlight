@@ -49,7 +49,13 @@ def main() -> None:
     base = dict(checkpoint.get("env_kwargs", {}))
     for item in args.env:
         key, value = item.split("=", 1)
-        base[key] = float(value)
+        if value.lower() in ("true", "false"):
+            base[key] = value.lower() == "true"
+        else:
+            try:
+                base[key] = float(value)
+            except ValueError:
+                base[key] = value  # e.g. sensors=lighthouse
 
     print(f"{'setting':<28} {'caught':>7} {'crashed':>8} {'too close':>10} {'closest':>10} {'throws':>6}")
     hard = f"difficulty 1 (±{HARD_ARC_DEG:.0f}°, {HARD_FLIGHT_S[0]}–{HARD_FLIGHT_S[1]} s)"
