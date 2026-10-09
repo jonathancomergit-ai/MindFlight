@@ -61,7 +61,7 @@ def main() -> None:
         shown = {"task", "success", "crashed", "return", "length_s", "lap_time_s", "finish_time_s", "final_distance_m"}
         extra = [f"{k} {100 * v:.1f}%" for k, v in s.items() if k not in shown and isinstance(v, float) and 0 <= v <= 1]
         if extra:  # the task's own rates, e.g. packs: collided, pack_collided, downwash_time
-            print("    " + " · ".join(extra))
+            print("    " + ", ".join(extra))
 
 
 if __name__ == "__main__":
