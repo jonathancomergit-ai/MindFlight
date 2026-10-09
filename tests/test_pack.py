@@ -49,8 +49,12 @@ def test_pack_mates_start_together_and_targets_are_formation_slots():
     env = pack(12, formations="hexagon")
     pos = env.per_world(env.state[:, POS])
     assert (pos.max(dim=1).values - pos.min(dim=1).values).max() < 2.3  # each pack starts within ~2 m
-    slots = env.per_world(env.target)
+    slots = env.slot_positions(torch.arange(2))
+    targets = env.per_world(env.target)
     for w in range(2):
+        # Each drone's target is one of the slots, and every slot is taken once (any assignment).
+        match = (targets[w, :, None] - slots[w, None]).norm(dim=-1) < 1e-5
+        assert (match.sum(dim=0) == 1).all() and (match.sum(dim=1) == 1).all()
         gaps = (slots[w, :, None] - slots[w, None]).norm(dim=-1)
         links = formation_links("hexagon", 6)
         ring = torch.tensor([gaps[k, links[k]].item() for k in range(6)])
@@ -331,3 +335,18 @@ def test_real_world_and_noisy_sensors_keep_working_with_downwash():
     for _ in range(5):
         obs, reward, done, info = env.step(torch.zeros(12, 4))
     assert obs.shape == (12, env.obs_size) and torch.isfinite(obs).all()
+
+
+def test_best_assignment_gives_each_drone_the_nearby_slot_and_no_crossings():
+    from mindflight.envs import make_env
+
+    env = make_env("pack", 6, device="cpu", seed=0, assignment="best")
+    env.reset()
+    worlds = torch.tensor([0])
+    slots = env.slot_positions(worlds)  # (1, 6, 3)
+    # Put the drones exactly on the slots, but in reversed order: drone k sits on slot 5 − k.
+    env.state[:6, 0:3] = slots[0].flip(0)
+    targets = env.assign_slots(worlds, slots)[0]
+    assert torch.allclose(targets, env.state[:6, 0:3])  # each drone keeps the slot it's already on
+    fixed = make_env("pack", 6, device="cpu", seed=0, assignment="fixed")
+    assert torch.equal(fixed.assign_slots(worlds, slots), slots)

@@ -170,3 +170,32 @@ a dropped input acts like one that always shows its average.
 
 The perfect-data pack brain falls apart with real sensors, the same story as P3. Still open: getting pack collisions
 under 2 %.
+
+
+## Smart slot assignment: collisions from 4.7 % to 0.5 % (follow-up #46)
+
+We counted *when* packs collided: 63 % in the first second after takeoff, the rest 0.5–1 s after a formation
+change. Both are moments when drones fly to new slots, and with **fixed slots** (drone k always takes slot k)
+some paths cross.
+
+The fix comes from real drone swarms. Every time the formation changes, give each drone the slot that makes the
+pack's total **squared** travel distance smallest. With 6 drones there are only 6! = 720 ways to hand out the slots,
+so the env tries them all at once on the GPU (`assignment="best"`, now the default).
+
+Why squared? If two straight paths crossed, swapping those two drones' slots would always make the squared total
+smaller. So the best assignment never has crossing paths.
+
+Same brain (`real_pack.pt`), no retraining, 1,000 packs of 6, realistic sensors and drones:
+
+| Slots | Formation waypoints | Packs with a collision |
+|---|---|---|
+| fixed | 95.3 % | 4.7 % |
+| **best assignment** | **99.0 %** (98.8 % on seed 2) | **0.5 %** (0.6 %) |
+| best, Flow deck (20 cm) | 93.6 % | 0.5 % |
+| best, `pack.pt` with perfect sensors | 99.0 % | 0.0 % |
+
+`real_pack.pt` is the realistic pack brain fine-tuned with a bigger cost for hitting a pack-mate
+(`collision_penalty=80`, `crowding_weight=2`); that alone only got packs from 5.4 % to 4.7 %.
+
+**Lesson:** the biggest win wasn't a better brain, it was a better plan for the brains to follow. On real drones the
+assignment runs on the PC (or one leader drone) and each drone gets its slot over the radio.
