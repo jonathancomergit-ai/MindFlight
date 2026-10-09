@@ -4,7 +4,15 @@
 it drifts, and it reaches the PC a little late over the radio. Real drones also differ from each other and from
 the published numbers. A brain trained on perfect data can fall apart on real data. So we train on realistic data.
 
-**Result:** RESULT_TABLE
+**Result:** brains trained on realistic data hold up on realistic drones. Brains trained on perfect data don't.
+All tests: 1,000 flights, attitude mode, every drone randomized (`real_world=true`).
+
+| Brain | Lighthouse, within 10 cm | Flow deck, within 15 cm | Crashes |
+|---|---|---|---|
+| hover, perfect data (`hover_attitude.pt`) | 97.4 % | 81.6 % | 0.3–0.8 % |
+| **hover, realistic data (`real_hover.pt`)** | **99.8 %** | **95.3 %** | **0 %** |
+| waypoint, perfect data (`waypoint_attitude.pt`) | 44.9 % | 33.2 % | 7–16 % |
+| **waypoint, realistic data (`real_waypoint.pt`)** | **95.8 %** | **94.9 %** (just under the 95 % bar) | **0.1 %** |
 
 ```
 python -m mindflight.train --task hover --env action_mode=attitude sensors=flowdeck real_world=true --init policies/hover_attitude.pt --reset-std 0.15
@@ -45,7 +53,32 @@ Logs from the real drone will replace them.
 An off-centre battery twists the drone a little, all the time. The onboard controller's integral learns to
 cancel it, just as on a real drone.
 
-FINDINGS
+## Why 15 cm for the Flow deck?
+
+A drone can only hold the spot it *thinks* it's at. With a Flow deck, its own sense of position wanders a few cm.
+So we measured the sensor limit: a perfect controller that sits exactly where its estimate says.
+
+| Sensors | Perfect controller, within 10 cm | within 15 cm |
+|---|---|---|
+| Lighthouse | 100 % | 100 % |
+| Flow deck | **54 %** | 98.7 % |
+
+No brain can beat 54 % at 10 cm with a Flow deck. Ours gets 50.8 %, close to that wall. At 15 cm the limit is
+98.7 % and ours gets 95.3 %. If you want 10 cm accuracy on the real drone, buy the Lighthouse kit.
+
+## What went wrong first
+
+The first noise model drew fresh noise every 20 ms. Hover looked fine (80 %), because fresh noise averages out.
+But a real Crazyflie's estimate comes out of a filter, so its errors *wander smoothly*, and the drone follows them.
+With realistic wandering errors, the 10 cm score fell to 48 %. That isn't a worse brain, it's a more honest test.
+The sensor-limit measurement above is how we told the two apart.
+
+## The lesson
+
+- **The waypoint brain trained on perfect data crashed up to 16 % of the time** on realistic drones. Same brain,
+  same task. Only the sensors and the drone changed. That's what usually happens on the first real flight, and
+  why we train this way.
+- **Measure the limit before you blame the brain.** When results stall, check what a perfect controller would get.
 
 ## Tests (`tests/test_sensing.py`)
 
