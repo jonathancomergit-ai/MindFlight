@@ -16,6 +16,8 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "httpx>=0.27"]  # httpx: FastAPI TestClient
+# Phase 2 · P4: fly a real Crazyflie (cflib) and run exported brains (ONNX). Pinned: the versions tested.
+deploy = ["cflib==0.1.34", "onnx==1.23.2", "onnxruntime==1.26.0"]
 
 [tool.setuptools.packages.find]
 include = ["mindflight*"]

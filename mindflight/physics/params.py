@@ -49,6 +49,27 @@ class CrazyflieParams:
     collision_height_m: float = 0.025
     motor_time_constant_s: float = 0.02  # ASSUMED: not in the source, revisit
 
+    # ---- The real drone's radio interface (Phase 2 · P4, mindflight/deploy/) ----
+    # The PC sends thrust as a whole number (0..65535). Stock firmware with battery compensation (the default for a
+    # Crazyflie 2.1+ with 2.1+ propellers) turns it into thrust per motor in a straight line:
+    #     thrust_per_motor_n = command / 65535 · firmware_motor_thrust_max_n
+    # Source: bitcraze/crazyflie-firmware, src/drivers/src/motors.c (motorsCompensateBatteryVoltage) and
+    # src/platform/interface/platform_defaults_cf2.h (THRUST_MAX, THRUST_MIN, VMOTOR2THRUST0..3, 2.1+ propellers).
+    firmware_motor_thrust_max_n: float = 0.12  # THRUST_MAX: newtons per motor at command 65535
+    firmware_motor_thrust_min_n: float = 0.012817578393224994  # THRUST_MIN: below this the firmware stops the motor
+    # The thrust command that holds the drone up. Default = weight / (4 · 0.12 N) · 65535 for mass_kg above.
+    # CALIBRATE it on the real drone (python -m mindflight.deploy --calibrate-hover): decks, battery and props change it.
+    hover_thrust_command: int = 36163
+    thrust_command_min: int = 10001  # cflib Commander.send_setpoint docs: "next to no power". We never fly below it.
+    thrust_command_max: int = 60000  # cflib docs: "full power"
+    # Motor voltage -> thrust per motor (N): c0 + c1·V + c2·V² + c3·V³ (firmware VMOTOR2THRUST0..3, 2.1+ props).
+    # The deploy simulator uses it to know how much thrust a tired battery can still give.
+    motor_volts_to_thrust_c0: float = -0.02476537915958403
+    motor_volts_to_thrust_c1: float = 0.06523793527519485
+    motor_volts_to_thrust_c2: float = -0.026792504967750107
+    motor_volts_to_thrust_c3: float = 0.006776789303971145
+    low_battery_v: float = 3.2  # firmware DEFAULT_BAT_LOW_VOLTAGE (platform_defaults_cf2.h): land below this
+
     @property
     def weight_n(self) -> float:
         """Force of gravity on the drone, m * g (N)."""
