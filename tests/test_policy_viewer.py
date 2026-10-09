@@ -91,3 +91,19 @@ def test_websocket_sends_scene_info_charts_and_metrics_once():
     assert "scene" in types
     metrics = next(t for t in texts if t["type"] == "metrics")
     assert metrics["points"] == [{"iteration": 1, "episode_return": 2.0}]
+
+
+def test_general_shapes_are_sent_with_offsets_and_colours():
+    source, _ = make_source("hover", n=2)
+    env = source.env
+    spheres = torch.zeros(2, 2, 4)
+    spheres[:, 0] = torch.tensor([1.0, 2.0, 3.0, 0.1])  # slot 0 drawn, slot 1 radius 0 = skipped
+    lines = torch.zeros(2, 1, 6)
+    lines[:, 0] = torch.tensor([0.0, 0.0, 0.0, 1.0, 0.0, 0.0])
+    env.display_objects = lambda: {"spheres": spheres, "spheres_colors": ["#ff0000", "#00ff00"], "lines": lines}
+    scene = source.scene()
+    assert len(scene["spheres"]) == 2 and len(scene["lines"]) == 2
+    off = source.offsets[1].tolist()
+    assert scene["spheres"][1][:3] == [round(1.0 + off[0], 3), round(2.0 + off[1], 3), round(3.0 + off[2], 3)]
+    assert scene["spheres"][0][4] == "#ff0000"
+    assert scene["lines"][0][6] == "#c8d0da"  # default colour

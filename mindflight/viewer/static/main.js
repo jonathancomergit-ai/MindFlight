@@ -278,6 +278,39 @@ function showScene(message) {
     sceneGroup.add(new THREE.Mesh(geometry, pillarMaterial));
     for (const [x, y] of message.pillars) points.push([x, y]);
   }
+  // General shapes (any task): spheres, upright cylinders and lines, each with its own colour.
+  if (message.spheres?.length) {
+    const geometry = mergeGeometries(
+      message.spheres.map(([x, y, z, r, color]) => {
+        points.push([x, y]);
+        return colored(new THREE.SphereGeometry(r, 16, 12).translate(x, y, z), new THREE.Color(color));
+      }),
+    );
+    sceneGroup.add(new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.5 })));
+  }
+  if (message.cylinders?.length) {
+    const geometry = mergeGeometries(
+      message.cylinders.map(([x, y, z0, h, r, color]) => {
+        points.push([x, y]);
+        const cylinder = new THREE.CylinderGeometry(r, r, h, 20).rotateX(Math.PI / 2).translate(x, y, z0 + h / 2);
+        return colored(cylinder, new THREE.Color(color));
+      }),
+    );
+    sceneGroup.add(new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.7 })));
+  }
+  if (message.lines?.length) {
+    const positions = [];
+    const colors = [];
+    for (const [x1, y1, z1, x2, y2, z2, color] of message.lines) {
+      const c = new THREE.Color(color);
+      positions.push(x1, y1, z1, x2, y2, z2);
+      colors.push(c.r, c.g, c.b, c.r, c.g, c.b);
+    }
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+    geometry.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
+    sceneGroup.add(new THREE.LineSegments(geometry, new THREE.LineBasicMaterial({ vertexColors: true })));
+  }
   fitView(points);
 }
 
