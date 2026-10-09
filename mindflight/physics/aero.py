@@ -54,6 +54,8 @@ class DroneVariation:
         through a point that is not the centre of mass, which twists the drone:
             τ = r × F,  r = (−dx, −dy, 0) from the centre of mass to the middle, F = (0, 0, T)
             -> τx = −dy · T,  τy = dx · T            (a heavy nose, dx > 0, pitches the nose down)
+    group_size: if set, the drones come in consecutive worlds of exactly this many (world = index // group_size),
+        and downwash is worked out per world with `downwash_grouped` (cost N · G instead of N²). Packs use this.
     """
 
     mass_scale: torch.Tensor | None = None
@@ -65,6 +67,7 @@ class DroneVariation:
     world_id: torch.Tensor | None = None  # (N,) long: drones with the same id share the air (for downwash)
     downwash: bool = False
     com_offset_m: torch.Tensor | None = None  # (N, 2): centre of mass off the geometric centre in x, y (body, m)
+    group_size: int | None = None  # drones per world, worlds in consecutive blocks (see `downwash_grouped`)
 
 
 @cached_on_device
@@ -134,13 +137,37 @@ def downwash_world(
     dz = position_m[None, :, 2] - position_m[:, None, 2]  # (N, N): z_j − z_i, j = column
     dxy = (position_m[None, :, :2] - position_m[:, None, :2]).norm(dim=-1)
     above = (dz > 0) & (world_id[None, :] == world_id[:, None])
+    push = downwash_pair_push(dz, dxy, above, params, min_gap_m).sum(dim=1)
+    push = push.clamp(max=params.weight_n)  # ASSUMED cap, see above
+    return torch.stack((torch.zeros_like(push), torch.zeros_like(push), -push), dim=1)
+
+
+def downwash_pair_push(
+    dz: torch.Tensor, dxy: torch.Tensor, above: torch.Tensor, params: CrazyflieParams = CRAZYFLIE, min_gap_m: float = 0.1
+) -> torch.Tensor:
+    """Downward push (N, ≥ 0) on drone i from drone j, for any shape of pair tensors: α · exp(−½ (Δxy / β)²) where
+    `above` (j is above i and they share the air), else 0. The formula and its clips are in `downwash_world`."""
     dz = dz.clamp_min(min_gap_m)
     alpha = params.downwash_coeff_1 * (params.prop_radius_m / (4 * dz)) ** 2
     beta = params.downwash_coeff_2 * dz + params.downwash_coeff_3
     beta = torch.where(beta.abs() < 0.02, torch.full_like(beta, 0.02), beta)
-    push = torch.where(above, alpha * torch.exp(-0.5 * (dxy / beta) ** 2), torch.zeros_like(dz)).sum(dim=1)
-    push = push.clamp(max=params.weight_n)  # ASSUMED cap, see above
-    return torch.stack((torch.zeros_like(push), torch.zeros_like(push), -push), dim=1)
+    return torch.where(above, alpha * torch.exp(-0.5 * (dxy / beta) ** 2), torch.zeros_like(dz))
+
+
+def downwash_grouped(
+    position_m: torch.Tensor, params: CrazyflieParams = CRAZYFLIE, min_gap_m: float = 0.1
+) -> torch.Tensor:
+    """`downwash_world` for drones that come in worlds of the same size G: position_m is (W, G, 3), one row of G
+    drones per world, and the result is the push (W, G, 3) in N (only z is non-zero). Same formula and caps.
+
+    Only the G × G pairs inside each world are worked out: W · G² pairs instead of (W · G)². For 4,096 drones in
+    worlds of 6 that is 25 thousand pairs instead of 17 million, so downwash can stay on while training.
+    """
+    dz = position_m[:, None, :, 2] - position_m[:, :, None, 2]  # (W, G, G): z_j − z_i, j = last index
+    dxy = (position_m[:, None, :, :2] - position_m[:, :, None, :2]).norm(dim=-1)
+    push = downwash_pair_push(dz, dxy, dz > 0, params, min_gap_m).sum(dim=-1)  # (W, G)
+    push = push.clamp(max=params.weight_n)  # ASSUMED cap, see downwash_world
+    return torch.stack((torch.zeros_like(push), torch.zeros_like(push), -push), dim=-1)
 
 
 def aero_force_world(
@@ -157,7 +184,10 @@ def aero_force_world(
     force = torch.zeros_like(velocity_mps)
     if variation.drag:
         force = force + rotor_drag_world(quat, velocity_mps, rpm, variation.wind_mps, params)
-    if variation.downwash and variation.world_id is not None:
+    if variation.downwash and variation.group_size is not None:  # worlds of G in a row: the cheap way
+        group = variation.group_size
+        force = force + downwash_grouped(position_m.reshape(-1, group, 3), params).reshape(-1, 3)
+    elif variation.downwash and variation.world_id is not None:
         force = force + downwash_world(position_m, variation.world_id, params)
     if variation.ground_effect:
         x, y = quat[:, 1], quat[:, 2]
