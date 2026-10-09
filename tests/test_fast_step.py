@@ -165,3 +165,34 @@ def test_compile_failure_falls_back_to_plain_step(monkeypatch):
     state = tumbling_swarm(4, "cuda")
     rpm_cmd = random_commands(4, "cuda", count=1)[0]
     torch.testing.assert_close(stepper.run(state, rpm_cmd), eager_run(state, rpm_cmd), rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
+def test_graph_stepper_with_variation_matches_eager_and_takes_new_values():
+    from mindflight.physics.aero import DroneVariation
+
+    n = 64
+    gen = torch.Generator().manual_seed(3)
+
+    def random_variation():
+        return DroneVariation(
+            mass_scale=(0.8 + 0.4 * torch.rand(n, generator=gen)).cuda(),
+            thrust_scale=(0.9 + 0.2 * torch.rand(n, generator=gen)).cuda(),
+            motor_tau_scale=(0.5 + torch.rand(n, generator=gen)).cuda(),
+            wind_mps=(2 * torch.rand(n, 3, generator=gen) - 1).cuda(),
+            drag=True,
+            ground_effect=True,
+        )
+
+    template = random_variation()
+    stepper = CudaGraphStepper(n, "cuda", substeps=10, variation=template)
+    state = make_state(n, "cuda", pos=[0.0, 0.0, 0.3], rpm=[CRAZYFLIE.hover_rpm] * 4)
+    rpm_cmd = torch.full((n, 4), CRAZYFLIE.hover_rpm, device="cuda")
+    for _ in range(5):
+        variation = random_variation()  # new wind and drones every call
+        graph_state = stepper.run(state, rpm_cmd, variation=variation)
+        eager_state = state
+        for _ in range(10):
+            eager_state = step(eager_state, rpm_cmd, variation=variation)
+        assert torch.allclose(graph_state, eager_state, atol=1e-5)
+        state = graph_state
