@@ -7,7 +7,8 @@ message, plus optional info lines, charts and a leaderboard.
 
 Layouts:
 - "grid": every drone has its own world (the usual training setup), so they are spread out on a grid with
-  `spacing_m` between them, and each drone's targets and gates are moved along with it.
+  `spacing_m` between them, and each drone's targets and gates are moved along with it. If the env has a
+  `world_id` (N,) (packs: several drones per world), the grid has one spot per *world* and all its drones share it.
 - "shared": every drone flies in the same world (gates: they all fly the same course, like a race). Nothing is
   moved, and objects that every drone shares are drawn once.
 
@@ -36,6 +37,7 @@ SHOW = {
     "gates": ("shared", 8, 0.0, 20.0),
     "obstacles": ("grid", 4, 10.0, None),
     "race": ("shared", 8, 0.0, 20.0),
+    "pack": ("grid", 24, 9.0, None),  # 4 packs of 6; spacing is between packs (worlds), not drones
 }
 
 
@@ -90,6 +92,10 @@ class PolicySource:
         self.offsets = (grid_offsets(env.n_envs, spacing_m) if layout == "grid" else torch.zeros(env.n_envs, 3)).to(
             env.device
         )
+        world_id = getattr(env, "world_id", None)  # envs where several drones share a world (packs)
+        if layout == "grid" and world_id is not None:  # one grid spot per world: its drones stay together
+            world_id = world_id.cpu()
+            self.offsets = grid_offsets(int(world_id.max()) + 1, spacing_m)[world_id].to(env.device)
         self.speed = speed
         self.max_catch_up_s = max_catch_up_s
         self.on_episode_end = on_episode_end

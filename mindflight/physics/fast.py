@@ -118,7 +118,11 @@ class CudaGraphStepper:
                 value = getattr(variation, name)
                 fields[name] = None if value is None else value.to(self.device).clone()
             self.static_variation = DroneVariation(
-                **fields, drag=variation.drag, ground_effect=variation.ground_effect, downwash=variation.downwash
+                **fields,
+                drag=variation.drag,
+                ground_effect=variation.ground_effect,
+                downwash=variation.downwash,
+                group_size=variation.group_size,  # a fixed shape, so it is recorded into the graph like the flags
             )
         self.controller = controller
         if self.uses_cuda_graph:
