@@ -15,6 +15,12 @@ Ways of running `step`:
                         It needs Triton for CUDA and a C++ compiler for CPU; if they are missing the row says so.
 - compile (cudagraphs): `torch.compile(step, backend="cudagraphs")`, CUDA only. Records the step's kernels once and
                         replays them with one launch, which removes the per-kernel launch cost but fuses nothing.
+                        Each output is cloned so it can be fed back in as the next input.
+- graph stepper:        `mindflight.physics.fast.CudaGraphStepper`, CUDA only: 10 physics steps (one policy action)
+                        recorded as one CUDA graph. Its rates are per *physics* step (calls/s × 10), so they compare
+                        directly with the rows above. Includes copying the inputs in and the output out.
+- graph stepper + compile: the same, with `compile=True`: torch.compile fuses the step's kernels first, then the
+                        graph records the fused kernels.
 
 GPU timings call `torch.cuda.synchronize()` before and after, because CUDA calls return before the GPU finishes.
 """
@@ -34,6 +40,7 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # so it runs without `pip install -e .`
 
 from mindflight.physics.dynamics import PHYSICS_DT_S, make_state, step  # noqa: E402
+from mindflight.physics.fast import POLICY_SUBSTEPS, CudaGraphStepper  # noqa: E402
 from mindflight.physics.params import CRAZYFLIE  # noqa: E402
 
 SWARM_SIZES = [1, 16, 256, 1024, 4096, 16384]
@@ -86,8 +93,13 @@ def sync(device: str) -> None:
         torch.cuda.synchronize()
 
 
-def time_steps(step_fn, n_drones: int, device: str, min_seconds: float, warmup_steps: int) -> float:
-    """Steps per second for `step_fn` on a hovering swarm of `n_drones` on `device`.
+def time_steps(
+    step_fn, n_drones: int, device: str, min_seconds: float, warmup_steps: int, steps_per_call: int = 1
+) -> float:
+    """Physics steps per second for `step_fn` on a hovering swarm of `n_drones` on `device`.
+
+    `steps_per_call`: how many physics steps one call of `step_fn` does (10 for the graph stepper), so every mode
+    is reported in the same unit.
 
     Warm up first (first calls pay for memory allocation, kernel loading and compiling). Then do TRIALS timed runs,
     each repeating batches of steps until at least `min_seconds` have passed, and report the median run, so one
@@ -112,7 +124,7 @@ def time_steps(step_fn, n_drones: int, device: str, min_seconds: float, warmup_s
             if elapsed_s >= min_seconds:
                 break
             batch = min(batch * 2, 10_000)
-        rates.append(steps_done / elapsed_s)
+        rates.append(steps_done * steps_per_call / elapsed_s)
     return statistics.median(rates)
 
 
@@ -125,6 +137,20 @@ def check_matches_eager(step_fn, device: str) -> None:
         eager, compiled = step(eager, rpm_cmd), step_fn(compiled, rpm_cmd)
     if not torch.allclose(eager, compiled, rtol=1e-4, atol=1e-5):
         raise RuntimeError("compiled step does not match eager step")
+
+
+def copy_graph_output(compiled_step):
+    """For the cudagraphs backend: return a copy of each output, like `CudaGraphStepper.run` does.
+
+    The graph writes every result into the same memory. We feed each result back in as the next input, and torch
+    refuses to replay over memory we might still read ("accessing tensor output of CUDAGraphs that has been
+    overwritten"), so we clone it first. That costs one extra copy kernel per call.
+    """
+
+    def copying_step(state: torch.Tensor, rpm_cmd: torch.Tensor) -> torch.Tensor:
+        return compiled_step(state, rpm_cmd).clone()
+
+    return copying_step
 
 
 def short_error(error: Exception) -> str:
@@ -147,6 +173,8 @@ def benchmark(devices: list[str], min_seconds: float) -> list[Result]:
             for mode, backend in device_modes:
                 torch._dynamo.reset()  # each mode starts with no cached compiled code
                 step_fn = step if backend is None else torch.compile(step, backend=backend, dynamic=False)
+                if backend == "cudagraphs":
+                    step_fn = copy_graph_output(step_fn)
                 warmup = 20 if backend is None else 50
                 failed_note = ""
                 if backend is not None:
@@ -165,7 +193,28 @@ def benchmark(devices: list[str], min_seconds: float) -> list[Result]:
                         result.note = cudagraph_skip_note(skip_catcher.reasons[0])
                     results.append(result)
                     print(format_row(result, results), flush=True)
+            if device == "cuda":
+                benchmark_graph_stepper(results, device, min_seconds, compile=False)
+                benchmark_graph_stepper(results, device, min_seconds, compile=True)
     return results
+
+
+def benchmark_graph_stepper(results: list[Result], device: str, min_seconds: float, compile: bool) -> None:
+    """Add rows for `CudaGraphStepper` to `results`: one CUDA graph per policy action (POLICY_SUBSTEPS physics steps)."""
+    mode = "graph stepper + compile" if compile else "graph stepper"
+    for n_drones in SWARM_SIZES:
+        torch._dynamo.reset()  # a fresh compile for each N (the graph is recorded for one fixed N anyway)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            stepper = CudaGraphStepper(n_drones, device, substeps=POLICY_SUBSTEPS, compile=compile)
+        if compile and not stepper.compiled:  # compiling failed and the stepper fell back to the plain step
+            reason = next((str(w.message) for w in caught if "torch.compile failed" in str(w.message)), "unknown")
+            results.append(Result(ALL_SIZES, device, mode, None, short_error(RuntimeError(reason.split(": ", 1)[-1]))))
+            print(format_row(results[-1], results), flush=True)
+            return
+        rate = time_steps(stepper.run, n_drones, device, min_seconds, warmup_steps=5, steps_per_call=POLICY_SUBSTEPS)
+        results.append(Result(n_drones, device, mode, rate))
+        print(format_row(results[-1], results), flush=True)
 
 
 @dataclass
@@ -245,18 +294,19 @@ def cpu_name() -> str:
     return platform.processor() or platform.machine()
 
 
-def best(results: list[Result], n_drones: int, device: str) -> Result | None:
-    """Fastest mode that really ran for this N and device (not one that silently fell back to eager)."""
+def best(results: list[Result], n_drones: int, device: str, modes: tuple[str, ...] | None = None) -> Result | None:
+    """Fastest mode (of `modes`, default any) that really ran for this N and device (not one that fell back to eager)."""
     ran = [
         r for r in results
         if r.n_drones == n_drones and r.device == device and r.steps_per_s is not None and not r.note
+        and (modes is None or r.mode in modes)
     ]
     return max(ran, key=lambda r: r.steps_per_s, default=None)
 
 
 def summary(results: list[Result], gpu_profile: GpuProfile | None) -> str:
-    """2–3 sentences on where the GPU beats the CPU and why, worked out from these numbers."""
-    pairs = [(n, best(results, n, "cpu"), best(results, n, "cuda")) for n in SWARM_SIZES]
+    """2–3 sentences on where the plain (eager) step on the GPU beats the CPU and why, worked out from these numbers."""
+    pairs = [(n, best(results, n, "cpu", ("eager",)), best(results, n, "cuda", ("eager",))) for n in SWARM_SIZES]
     pairs = [(n, cpu, gpu) for n, cpu, gpu in pairs if cpu and gpu]
     if not pairs:
         return "Only one device ran, so there is no CPU vs GPU comparison."
@@ -286,13 +336,45 @@ def summary(results: list[Result], gpu_profile: GpuProfile | None) -> str:
         f"Below that the CPU wins (N = {n_small:,}: CPU {format_number(cpu_small.steps_per_s)} vs "
         f"GPU {format_number(gpu_small.steps_per_s)} steps/s), {why}. "
         f"That launch cost is the same for 1 drone or 16,384, so the GPU's steps/s stays almost flat as N grows while "
-        f"the CPU's time grows with N, and fusing the step into fewer kernels (torch.compile with Triton, or CUDA graphs) "
-        f"is the next big speed-up."
+        f"the CPU's time grows with N. The next section removes that launch cost."
     )
 
 
-def write_doc(results: list[Result], devices: list[str], min_seconds: float, gpu_profile: GpuProfile | None) -> str:
-    """Render docs/benchmark.md and return its text."""
+def fast_path_summary(results: list[Result]) -> str:
+    """2–3 sentences on what the CUDA graph stepper (and torch.compile inside it) buys over the eager GPU step."""
+
+    def rate(mode: str, n_drones: int) -> Result | None:
+        return best(results, n_drones, "cuda", (mode,))
+
+    sizes = [n for n in (4096, 16384) if rate("eager", n) and rate("graph stepper", n)]
+    if not sizes:
+        return "The graph stepper did not run (it needs a CUDA GPU)."
+    speedups = " and ".join(
+        f"{rate('graph stepper', n).steps_per_s / rate('eager', n).steps_per_s:.1f}× at N = {n:,}" for n in sizes
+    )
+    text = (
+        f"Recording 10 physics steps as one CUDA graph (`CudaGraphStepper`) removes the CPU's launch cost: "
+        f"{speedups} over the eager GPU step, with bit-identical results. "
+    )
+    compiled = [n for n in sizes if rate("graph stepper + compile", n)]
+    if compiled:
+        n_big = compiled[-1]
+        fused, graph = rate("graph stepper + compile", n_big), rate("graph stepper", n_big)
+        text += (
+            f"The graph still runs every tiny kernel one after another, each with a few µs of GPU start-up and its "
+            f"own trip through memory; letting torch.compile fuse them first (`compile=True`) is another "
+            f"{fused.steps_per_s / graph.steps_per_s:.1f}× and reaches {format_number(fused.drone_steps_per_s)} "
+            f"drone-steps/s at N = {n_big:,} ({fused.steps_per_s / rate('eager', n_big).steps_per_s:.0f}× eager)."
+        )
+    else:
+        text += "torch.compile did not run here (it needs triton), so the compiled stepper rows are missing."
+    return text
+
+
+def write_doc(
+    results: list[Result], devices: list[str], min_seconds: float, gpu_profile: GpuProfile | None, note: str = ""
+) -> str:
+    """Render docs/benchmark.md and return its text. `note`: one line about the conditions, e.g. a busy machine."""
     gpu = torch.cuda.get_device_name(0) if "cuda" in devices else "none"
     lines = [
         "# Physics benchmark: how many drones can we fly?",
@@ -300,7 +382,8 @@ def write_doc(results: list[Result], devices: list[str], min_seconds: float, gpu
         "Generated by `python scripts/benchmark.py`. Times one call of `mindflight.physics.dynamics.step` for the",
         f"whole swarm (dt = {PHYSICS_DT_S * 1000:g} ms), hovering, with no autograd. **drone-steps/s** = N × steps/s.",
         "**real-time ×** = steps/s × dt: at 1.0 the swarm flies as fast as real time. **vs eager** compares a",
-        "compiled step with the plain one on the same device and N.",
+        "faster mode with the plain step on the same device and N. The graph stepper rows do 10 physics steps per call",
+        "(one 50 Hz policy action) and are reported per physics step, so they compare directly.",
         "",
         "## Machine",
         "",
@@ -308,6 +391,7 @@ def write_doc(results: list[Result], devices: list[str], min_seconds: float, gpu
         f"- CPU: {cpu_name()} ({torch.get_num_threads()} torch threads)",
         f"- torch {torch.__version__}, CUDA {torch.version.cuda or 'n/a'}, Python {platform.python_version()}, {platform.system()} {platform.release()}",
         f"- Each row: warm-up, then the median of {TRIALS} runs of at least {min_seconds:g} s",
+        *([f"- Note: {note}"] if note else []),
         "",
         "## GPU vs CPU",
         "",
@@ -330,6 +414,13 @@ def write_doc(results: list[Result], devices: list[str], min_seconds: float, gpu
             if gpu_profile
             else []
         ),
+        "## Fast path: CUDA graphs and torch.compile",
+        "",
+        fast_path_summary(results),
+        "",
+        "Training should use `CudaGraphStepper(n, \"cuda\", substeps=10, compile=True)` from `mindflight/physics/fast.py`",
+        "(it falls back to the graph alone if triton is missing); the plain `step` stays the readable reference.",
+        "",
         "## Results",
         "",
         TABLE_HEADER,
@@ -337,12 +428,14 @@ def write_doc(results: list[Result], devices: list[str], min_seconds: float, gpu
         "",
         "## Why `torch.compile` (inductor) may say \"not available\"",
         "",
-        "Inductor writes new fused kernels at run time. For CUDA it needs the `triton` package (on Windows:",
-        "`pip install triton-windows`), and for CPU it needs a C++ compiler (on Windows: MSVC from the Visual Studio",
-        "Build Tools, run from a Developer prompt). Without them the row above records the error instead of a time.",
-        "The `cudagraphs` backend needs neither: it records the step's kernels once and replays them with one launch.",
-        "It can only do that if `step()` creates no CPU tensors; if the rows above say \"graphs not captured\", that is",
-        "why, and those rows are plain eager speed.",
+        "Inductor writes new fused kernels at run time. For CUDA it needs the `triton` package (on Windows, for torch",
+        "2.11: `pip install \"triton-windows<3.8\"`), and for CPU it needs a C++ compiler (on Windows: MSVC from the",
+        "Visual Studio Build Tools, run from a Developer prompt). Without them the row above records the error instead",
+        "of a time. A CUDA step only stays free of the C++ compiler if it does no CPU work at all: before the motor",
+        "layout, gravity and inertia were kept on the GPU (`mindflight/physics/device_cache.py`), that small CPU math",
+        "made inductor ask for MSVC even on CUDA. The `cudagraphs` backend and the graph stepper need neither tool,",
+        "but they too can only record a step that never copies from the CPU; if a row says \"graphs not captured\",",
+        "that row is plain eager speed.",
         "",
     ]
     text = "\n".join(lines)
@@ -357,6 +450,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--quick", action="store_true", help="time each row for 0.1 s instead of 1 s")
     parser.add_argument("--cpu-only", action="store_true", help="skip the GPU even if one is available")
+    parser.add_argument("--note", default="", help="one line about the run's conditions, written into the doc")
     args = parser.parse_args()
 
     if hasattr(sys.stdout, "reconfigure"):
@@ -370,9 +464,10 @@ def main() -> None:
     if gpu_profile and timed:
         # The profiler itself slows the CPU side down, so use the clean timed run for the wall-clock time.
         gpu_profile.wall_ms_per_step = 1000 / timed.steps_per_s
-    write_doc(results, devices, min_seconds, gpu_profile)
+    write_doc(results, devices, min_seconds, gpu_profile, args.note)
     print()
     print(summary(results, gpu_profile))
+    print(fast_path_summary(results))
     print(f"\nWrote {DOC_PATH}")
 
 

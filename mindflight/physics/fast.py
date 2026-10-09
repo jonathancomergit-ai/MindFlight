@@ -3,7 +3,7 @@
 Why is the plain `step` slow on a GPU for small swarms?
     A GPU is a huge number of small workers. To give them a job, the CPU "launches a kernel": it sends one small
     program (say, "multiply these two tensors") to the GPU. Every PyTorch operation is at least one kernel, and one
-    `step` is about 80 of them (the RK4 rotation update alone is four rounds of quaternion math). Launching a kernel
+    `step` is about 200 of them (the RK4 rotation update alone is four rounds of quaternion math). Launching a kernel
     costs the CPU roughly 5-20 µs, whatever the tensor size. Running one of our kernels on, say, 4,096 drones takes
     the GPU only about 2 µs. So the GPU spends most of each step waiting for the CPU to hand it the next job:
     `docs/benchmark.md` measured the GPU busy only 12 % of the time. That is "launch-bound".
@@ -12,7 +12,7 @@ What a CUDA graph does
     Capture: we run the steps once while CUDA *records* every kernel and its arguments (which memory to read and
     write) instead of running them. The result is a graph: the whole list of kernels, ready to go.
     Replay: `graph.replay()` sends the whole list to the GPU in one launch. The GPU runs the same kernels on the
-    same memory, back to back, with no CPU in between. 10 physics steps × ~80 kernels become one launch.
+    same memory, back to back, with no CPU in between. 10 physics steps × ~200 kernels become one launch.
 
 The static-buffer rule (the one thing to remember)
     A graph remembers *memory addresses*, not Python variables. Replay always reads from the exact tensors that
@@ -28,7 +28,7 @@ The static-buffer rule (the one thing to remember)
 
 Going further: `compile=True`
     A graph removes the CPU's launch cost, but the GPU still runs every tiny kernel one after another. With
-    `compile=True`, `torch.compile` first fuses the ~80 kernels of a step into a few, and then the graph records
+    `compile=True`, `torch.compile` first fuses the ~200 kernels of a step into a few, and then the graph records
     those. See `CudaGraphStepper` for when to use it.
 
 On the CPU there are no kernels to launch and no graphs, so `CudaGraphStepper` simply calls `step` in a loop.
@@ -66,7 +66,7 @@ class CudaGraphStepper:
     device: "cuda", "cuda:0", "cpu", ... Defaults to "cuda" when a GPU is available.
     substeps: physics steps per `run()` call. dt: physics step in s. params: the drone.
     compile: CUDA only. Also run `torch.compile` on the step before recording the graph. The graph removes the
-        CPU's launch cost, but the GPU still runs ~80 tiny kernels per step, each with a few µs of start-up and
+        CPU's launch cost, but the GPU still runs ~200 tiny kernels per step, each with a few µs of start-up and
         its own trip through GPU memory. The compiler fuses them into a handful of bigger kernels, which made the
         stepper about 10× faster again on an RTX 5090 (docs/benchmark.md). Needs the `triton` package (Windows:
         `pip install "triton-windows<3.8"` for torch 2.11) and ~10 s of compiling the first time (later runs reuse
@@ -158,5 +158,5 @@ class CudaGraphStepper:
 
         self.static_state.copy_(state)  # the static-buffer rule: copy new inputs into the recorded memory
         self.static_rpm_cmd.copy_(rpm_cmd)
-        self.graph.replay()  # all substeps × ~80 kernels, one launch
+        self.graph.replay()  # all substeps × ~200 kernels, one launch
         return self.static_output.clone() if copy_output else self.static_output
