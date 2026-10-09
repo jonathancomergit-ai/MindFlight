@@ -32,6 +32,7 @@ import math
 import torch
 
 from mindflight.physics.aero import DroneVariation
+from mindflight.physics.controller import GAINS, attitude_action_to_setpoint, controller_step
 from mindflight.physics.dynamics import OMEGA, PHYSICS_DT_S, POS, QUAT, RPM, STATE_SIZE, VEL, step
 from mindflight.physics.fast import CudaGraphStepper
 from mindflight.physics.params import CRAZYFLIE, CrazyflieParams, load_drone
@@ -87,10 +88,20 @@ class DroneEnv:
         device: str | None = None,
         seed: int = 0,
         drone: "str | CrazyflieParams | None" = None,
+        action_mode: str = "motors",
     ):
-        """drone: which drone file to fly (mindflight/drones/<name>.json); None = the Crazyflie 2.1+."""
+        """drone: which drone file to fly (mindflight/drones/<name>.json); None = the Crazyflie 2.1+.
+
+        action_mode: what the 4 action numbers mean.
+            "motors"   (Phase 1): each one is a motor's speed, rpm = hover · (1 + 0.5 · a).
+            "attitude" (Phase 2): thrust, roll, pitch, yaw rate, handed to the onboard controller
+                       (physics/controller.py), exactly the kind of command a real Crazyflie takes over the radio.
+        """
+        if action_mode not in ("motors", "attitude"):
+            raise ValueError(f"action_mode must be 'motors' or 'attitude', not {action_mode!r}")
         self.params = load_drone(drone)
         self.drone = self.params.name
+        self.action_mode = action_mode
         if device is None:
             device = "cuda" if torch.cuda.is_available() else "cpu"
         self.n_envs = n_envs
@@ -105,6 +116,7 @@ class DroneEnv:
         # Running totals for the episode each drone is in, reported when it ends.
         self.episode_return = torch.zeros(n_envs, device=self.device)
         self.stepper: CudaGraphStepper | None = None  # built on first use (recording takes a few seconds)
+        self.controller_integral = torch.zeros(n_envs, 3, device=self.device)  # attitude mode: the controller's memory
         # Level 5: per-drone mass/thrust/motor lag, wind, drag, ground effect (physics/aero.py). None = standard.
         self.variation: DroneVariation | None = None
 
@@ -208,15 +220,19 @@ class DroneEnv:
         self.state[ids] = 0.0
         self.state[ids, QUAT.start] = 1.0
         self.state[ids, RPM] = self.params.hover_rpm
+        self.controller_integral[ids] = 0.0
         self.action[ids] = 0.0
         self.prev_action[ids] = 0.0
         self.step_count[ids] = 0
         self.episode_return[ids] = 0.0
         self._reset_task(ids)
 
-    def physics(self, rpm_cmd: torch.Tensor) -> None:
-        """Run SUBSTEPS physics steps with the motor command held fixed (a zero-order hold, like a real flight
-        controller that updates its motor outputs at 50 Hz)."""
+    def physics(self, command: torch.Tensor) -> None:
+        """Run SUBSTEPS physics steps with the command held fixed (a zero-order hold: the brain decides at 50 Hz).
+
+        command: motor RPM (N, 4) in "motors" mode, or an attitude setpoint (N, 4) in "attitude" mode, in which case
+        the onboard controller turns it into motor speeds before every physics step (500 Hz)."""
+        attitude = self.action_mode == "attitude"
         if self.fast_physics and self.device.type == "cuda":
             if self.stepper is None:
                 self.stepper = CudaGraphStepper(
@@ -226,13 +242,29 @@ class DroneEnv:
                     params=self.params,
                     compile=True,
                     variation=self.variation,
+                    controller=GAINS if attitude else None,
                 )
-            self.state = self.stepper.run(self.state, rpm_cmd, variation=self.variation)
+            if attitude:
+                self.state, self.controller_integral = self.stepper.run_controlled(
+                    self.state, command, self.controller_integral, variation=self.variation
+                )
+            else:
+                self.state = self.stepper.run(self.state, command, variation=self.variation)
             return
-        state = self.state
+        state, integral = self.state, self.controller_integral
         for _ in range(SUBSTEPS):
+            if attitude:
+                rpm_cmd, integral = controller_step(state, command, integral, PHYSICS_DT_S, self.params, GAINS)
+            else:
+                rpm_cmd = command
             state = step(state, rpm_cmd, params=self.params, variation=self.variation)
-        self.state = state
+        self.state, self.controller_integral = state, integral
+
+    def command(self, action: torch.Tensor) -> torch.Tensor:
+        """The clamped action -> what `physics` takes: motor RPM, or an attitude setpoint (see action_mode)."""
+        if self.action_mode == "attitude":
+            return attitude_action_to_setpoint(action, self.params)
+        return action_to_rpm(action, self.params)
 
     def step(self, action: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, dict]:
         """Take one action for every drone. Returns (obs, reward, done, info).
@@ -246,7 +278,7 @@ class DroneEnv:
         """
         self.prev_action = self.action
         self.action = action.clamp(-1.0, 1.0)
-        self.physics(action_to_rpm(self.action, self.params))
+        self.physics(self.command(self.action))
         self.step_count += 1
 
         reward = self._reward()

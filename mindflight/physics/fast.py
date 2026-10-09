@@ -45,6 +45,7 @@ import warnings
 import torch
 
 from mindflight.physics.aero import DroneVariation
+from mindflight.physics.controller import ControllerGains, controller_step
 from mindflight.physics.dynamics import PHYSICS_DT_S, STATE_SIZE, make_state, step
 from mindflight.physics.params import CRAZYFLIE, CrazyflieParams
 
@@ -52,7 +53,7 @@ POLICY_SUBSTEPS = 10  # physics steps per policy action: 500 Hz physics / 50 Hz 
 WARMUP_RUNS = 3  # eager runs on a side stream before capture, as the PyTorch CUDA graph docs ask
 
 
-VARIATION_TENSORS = ("mass_scale", "thrust_scale", "motor_tau_scale", "wind_mps")  # DroneVariation's tensor fields
+VARIATION_TENSORS = ("mass_scale", "thrust_scale", "motor_tau_scale", "wind_mps", "world_id")  # tensor fields
 
 
 class CudaGraphStepper:
@@ -88,10 +89,15 @@ class CudaGraphStepper:
         params: CrazyflieParams = CRAZYFLIE,
         compile: bool = False,
         variation: DroneVariation | None = None,
+        controller: ControllerGains | None = None,
     ):
         """variation (Level 5): a template saying which per-drone extras the physics uses. Its flags (drag,
-        ground_effect) are fixed when the graph is recorded; its tensors get static buffers, and `run` copies new
-        values into them each call (so wind and mass can change every step without re-recording)."""
+        ground_effect, downwash) are fixed when the graph is recorded; its tensors get static buffers, and `run`
+        copies new values into them each call (so wind and mass can change every step without re-recording).
+
+        controller (Phase 2): run the onboard controller (physics/controller.py) before every physics step. Then
+        use `run_controlled(state, setpoint, integral)`: the command is an attitude setpoint instead of motor
+        speeds, and the controller's integral is carried in and out."""
         if device is None:
             device = "cuda" if torch.cuda.is_available() else "cpu"
         self.n = n
@@ -111,19 +117,30 @@ class CudaGraphStepper:
             for name in VARIATION_TENSORS:
                 value = getattr(variation, name)
                 fields[name] = None if value is None else value.to(self.device).clone()
-            self.static_variation = DroneVariation(**fields, drag=variation.drag, ground_effect=variation.ground_effect)
+            self.static_variation = DroneVariation(
+                **fields, drag=variation.drag, ground_effect=variation.ground_effect, downwash=variation.downwash
+            )
+        self.controller = controller
         if self.uses_cuda_graph:
             self._capture()
 
-    def _advance(self, state: torch.Tensor, rpm_cmd: torch.Tensor) -> torch.Tensor:
-        """`substeps` physics steps with the same command. This is what the graph records."""
+    def _advance(self, state: torch.Tensor, command: torch.Tensor, integral: torch.Tensor | None = None):
+        """`substeps` physics steps with the same command. This is what the graph records.
+
+        Without a controller the command is motor RPM and this returns the new state. With one, the command is an
+        attitude setpoint, the controller picks motor speeds before every physics step, and this returns
+        (new state, new integral)."""
         for _ in range(self.substeps):
+            if self.controller is not None:
+                rpm_cmd, integral = controller_step(state, command, integral, self.dt, self.params, self.controller)
+            else:
+                rpm_cmd = command
             state = self.step_fn(state, rpm_cmd, self.dt, self.params, self.static_variation)
-        return state
+        return state if self.controller is None else (state, integral)
 
     def _warm_up(self) -> None:
         for _ in range(WARMUP_RUNS):
-            self._advance(self.static_state, self.static_rpm_cmd)
+            self._advance(self.static_state, self.static_rpm_cmd, self.static_integral)
 
     @torch.no_grad()
     def _capture(self) -> None:
@@ -131,6 +148,11 @@ class CudaGraphStepper:
         # Static input buffers: replay always reads these. Any valid starting values do for the recording.
         self.static_state = make_state(self.n, self.device, pos=[0.0, 0.0, 1.0], rpm=[self.params.hover_rpm] * 4)
         self.static_rpm_cmd = torch.full((self.n, 4), self.params.hover_rpm, device=self.device)
+        self.static_integral = None
+        if self.controller is not None:  # the command buffer holds a setpoint: hover thrust, level, no yaw
+            self.static_rpm_cmd = torch.zeros(self.n, 4, device=self.device)
+            self.static_rpm_cmd[:, 0] = self.params.weight_n
+            self.static_integral = torch.zeros(self.n, 3, device=self.device)
 
         # Warm-up on a side stream: the first calls allocate memory, fill the constant caches (device_cache.py),
         # pick kernels and (with compile=True) compile. None of that may happen while recording.
@@ -151,7 +173,7 @@ class CudaGraphStepper:
         # output tensor: every replay writes the new state into this same memory.
         self.graph = torch.cuda.CUDAGraph()
         with torch.cuda.graph(self.graph):
-            self.static_output = self._advance(self.static_state, self.static_rpm_cmd)
+            self.static_output = self._advance(self.static_state, self.static_rpm_cmd, self.static_integral)
 
     @torch.no_grad()  # the simulator never needs gradients, and a graph can't record autograd anyway
     def run(
@@ -188,3 +210,30 @@ class CudaGraphStepper:
         self.static_rpm_cmd.copy_(rpm_cmd)
         self.graph.replay()  # all substeps × ~200 kernels, one launch
         return self.static_output.clone() if copy_output else self.static_output
+
+    @torch.no_grad()
+    def run_controlled(
+        self,
+        state: torch.Tensor,
+        setpoint: torch.Tensor,
+        integral: torch.Tensor,
+        variation: DroneVariation | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Like `run`, for a stepper built with a controller: setpoint (N, 4) = thrust (N), roll (rad), pitch (rad),
+        yaw rate (rad/s), held for all substeps; integral (N, 3) is the controller's memory. Returns new copies of
+        (state, integral)."""
+        if self.controller is None:
+            raise ValueError("this stepper has no controller: build it with controller=ControllerGains()")
+        if variation is not None:
+            for name in VARIATION_TENSORS:
+                value, buffer = getattr(variation, name), getattr(self.static_variation, name)
+                if value is not None:
+                    buffer.copy_(value)
+        if not self.uses_cuda_graph:
+            return self._advance(state, setpoint, integral)
+        self.static_state.copy_(state)
+        self.static_rpm_cmd.copy_(setpoint)
+        self.static_integral.copy_(integral)
+        self.graph.replay()
+        new_state, new_integral = self.static_output
+        return new_state.clone(), new_integral.clone()
