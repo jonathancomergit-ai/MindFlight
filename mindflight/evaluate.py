@@ -12,6 +12,18 @@ from mindflight.envs import TASKS, make_env
 from mindflight.rl.train import evaluate, load_policy
 
 
+def describe(key: str, value: float) -> str:
+    """One extra number for the table: metres for keys ending in _m, seconds for _s, a percentage for rates in
+    [0, 1], else a plain number."""
+    if key.endswith("_m"):
+        return f"{key} {value:.3f} m"
+    if key.endswith("_s"):
+        return f"{key} {value:.2f} s"
+    if 0.0 <= value <= 1.0:
+        return f"{key} {100 * value:.1f}%"
+    return f"{key} {value:.3g}"
+
+
 def score(
     path: str, n: int = 1000, device: str | None = None, seed: int = 12345, task: str | None = None, **overrides
 ) -> dict[str, float]:
@@ -59,8 +71,8 @@ def main() -> None:
             f"{s['return']:8.1f} {s['length_s']:6.1f}s {lap}"
         )
         shown = {"task", "success", "crashed", "return", "length_s", "lap_time_s", "finish_time_s", "final_distance_m"}
-        extra = [f"{k} {100 * v:.1f}%" for k, v in s.items() if k not in shown and isinstance(v, float) and 0 <= v <= 1]
-        if extra:  # the task's own rates, e.g. packs: collided, pack_collided, downwash_time
+        extra = [describe(k, v) for k, v in s.items() if k not in shown and isinstance(v, float)]
+        if extra:  # the task's own numbers, e.g. packs: collided, pack_collided; intercept: closest_to_body_m
             print("    " + ", ".join(extra))
 
 
