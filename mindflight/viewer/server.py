@@ -20,10 +20,32 @@ Frame format (the contract the simulator uses to talk to the viewer):
 
 Frames come from a `FrameSource`: anything with an `n_drones` attribute and a `frame(time_s)` method returning an
 (N, 7) float32 array. `FakeSwarm` below is one (no physics). `sim_source.SimSource` runs the real simulator in real
-time (`python -m mindflight.demo`).
+time (`python -m mindflight.demo`). `policy_source.PolicySource` flies trained policies on a task
+(`python -m mindflight.play`, `python -m mindflight.train --view`).
+
+Text messages (optional). Besides the binary pose frames, a source may send JSON **text** messages, for things that
+change rarely or aren't drone poses. A source opts in with either or both of:
+
+    state_messages() -> list[dict]   the *current* scene / info / board / charts. Checked after every frame; each
+                                     page is sent a message only when it differs from the last one of that type
+                                     the page got (so a newly opened page gets everything at once).
+    metric_points: list[dict]        an append-only list of chart points. Each page is sent the ones it hasn't
+                                     seen yet, as one "metrics" message.
+
+Message types the page understands (all coordinates in metres, world frame):
+
+    {"type": "scene", "targets": [[x, y, z], ...],                      small spheres (e.g. waypoint targets)
+                      "gates": [{"c": [x, y, z], "yaw": ψ, "size": s, "state": "next" | "later" | "done"}, ...],
+                      "pillars": [[x, y, radius], ...]}                 floor-to-ceiling cylinders
+        Replaces the whole previous scene. Any key may be missing.
+    {"type": "info", "lines": ["...", ...]}                             text lines under the HUD
+    {"type": "charts", "series": [{"key": "...", "label": "..."}, ...]} which metrics to plot
+    {"type": "metrics", "points": [{"iteration": 1, "<key>": value, ...}, ...]}   new points for the charts
+    {"type": "board", "title": "...", "columns": [...], "rows": [[...], ...]}     a table (the race leaderboard)
 """
 
 import asyncio
+import json
 import math
 import time
 from collections.abc import Callable
@@ -149,10 +171,27 @@ def create_app(
         await websocket.accept()
         start_s = time.perf_counter()
 
+        last_sent: dict[str, str] = {}  # message type -> the JSON this page last got, for state messages
+        points_sent = 0  # how many of source.metric_points this page has
+
+        async def send_text_messages() -> None:
+            nonlocal points_sent
+            for message in source.state_messages() if hasattr(source, "state_messages") else []:
+                text = json.dumps(message)
+                if last_sent.get(message["type"]) != text:
+                    await websocket.send_text(text)
+                    last_sent[message["type"]] = text
+            points = getattr(source, "metric_points", None)
+            if points is not None and len(points) > points_sent:
+                new_points = list(points[points_sent:])
+                points_sent += len(new_points)
+                await websocket.send_text(json.dumps({"type": "metrics", "points": new_points}))
+
         async def send_frames() -> None:
             next_send_s = time.perf_counter()
             while True:
                 await websocket.send_bytes(encode_frame(source.frame(time.perf_counter() - start_s)))
+                await send_text_messages()
                 next_send_s += 1 / FRAME_RATE_HZ
                 await asyncio.sleep(max(0.0, next_send_s - time.perf_counter()))
 

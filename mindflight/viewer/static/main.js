@@ -3,6 +3,9 @@
 // Each binary message is a Float32Array of N × 7 values, per drone: x, y, z, qw, qx, qy, qz
 // (metres, world frame, Z up; quaternion rotates body → world). See mindflight/viewer/server.py.
 //
+// The server may also send JSON text messages: the task's objects (targets, gates, pillars), info lines, learning
+// charts and a leaderboard. See "Text messages" in server.py.
+//
 // /config may also list drone groups (the live demo does). Each group gets its own back-rotor colour and a line in the
 // legend. Nothing about groups goes over the WebSocket: the colours are worked out here from drone numbers.
 
@@ -202,6 +205,188 @@ if (config.resettable) {
   }
 }
 
+// ---------- the task's objects: targets, gates, pillars (from "scene" text messages) ----------
+
+const sceneGroup = new THREE.Group();
+scene.add(sceneGroup);
+const GATE_COLORS = { next: new THREE.Color(0x6fdc8c), later: new THREE.Color(0xff9f43), done: new THREE.Color(0x4a5260) };
+const GATE_BAR_M = 0.04; // drawn frame thickness
+const PILLAR_HEIGHT_M = 4.0;
+
+function clearScene() {
+  for (const child of [...sceneGroup.children]) {
+    sceneGroup.remove(child);
+    child.geometry.dispose();
+    child.material.dispose();
+  }
+}
+
+function colored(geometry, color) {
+  const colors = new Float32Array(geometry.attributes.position.count * 3);
+  for (let i = 0; i < colors.length; i += 3) color.toArray(colors, i);
+  geometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+  return geometry;
+}
+
+// One square gate: 4 bars around an opening of `size`, standing upright, facing along (cos yaw, sin yaw, 0).
+function gateGeometry(gate) {
+  const half = gate.size / 2 + GATE_BAR_M / 2;
+  const span = gate.size + 2 * GATE_BAR_M;
+  const bars = [
+    [new THREE.BoxGeometry(GATE_BAR_M, span, GATE_BAR_M), 0, +half], // top
+    [new THREE.BoxGeometry(GATE_BAR_M, span, GATE_BAR_M), 0, -half], // bottom
+    [new THREE.BoxGeometry(GATE_BAR_M, GATE_BAR_M, span), +half, 0], // left
+    [new THREE.BoxGeometry(GATE_BAR_M, GATE_BAR_M, span), -half, 0], // right
+  ].map(([bar, y, z]) => {
+    bar.translate(0, y, z);
+    bar.rotateZ(gate.yaw);
+    bar.translate(gate.c[0], gate.c[1], gate.c[2]);
+    return colored(bar, GATE_COLORS[gate.state] ?? GATE_COLORS.later);
+  });
+  return mergeGeometries(bars);
+}
+
+function showScene(message) {
+  clearScene();
+  const points = [];
+  if (message.targets?.length) {
+    const sphere = new THREE.SphereGeometry(0.03, 12, 8);
+    const material = new THREE.MeshBasicMaterial({ color: 0xf1c21b });
+    const mesh = new THREE.InstancedMesh(sphere, material, message.targets.length);
+    const place = new THREE.Matrix4();
+    message.targets.forEach(([x, y, z], i) => {
+      mesh.setMatrixAt(i, place.makeTranslation(x, y, z));
+      points.push([x, y]);
+    });
+    sceneGroup.add(mesh);
+  }
+  if (message.gates?.length) {
+    const geometry = mergeGeometries(message.gates.map(gateGeometry));
+    sceneGroup.add(new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.6 })));
+    for (const gate of message.gates) points.push([gate.c[0], gate.c[1]]);
+  }
+  if (message.pillars?.length) {
+    const geometry = mergeGeometries(
+      message.pillars.map(([x, y, radius]) => {
+        const pillar = new THREE.CylinderGeometry(radius, radius, PILLAR_HEIGHT_M, 20);
+        pillar.rotateX(Math.PI / 2); // cylinder axis y -> z
+        pillar.translate(x, y, PILLAR_HEIGHT_M / 2);
+        return pillar;
+      }),
+    );
+    sceneGroup.add(new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({ color: 0x8a94a3, roughness: 0.8 })));
+    for (const [x, y] of message.pillars) points.push([x, y]);
+  }
+  fitView(points);
+}
+
+// The first time we learn how big the world is, grow the floor grid and pull the camera back to see it all.
+let viewFitted = false;
+function fitView(points) {
+  if (viewFitted || points.length === 0) return;
+  viewFitted = true;
+  let reach = 0;
+  for (const [x, y] of points) reach = Math.max(reach, Math.abs(x), Math.abs(y));
+  const size = 2 * Math.ceil(reach + 2);
+  if (size > gridSizeM) {
+    grid.scale.setScalar(size / gridSizeM);
+    camera.position.set(-size * 0.45, -size * 0.35, size * 0.3);
+    camera.far = Math.max(camera.far, size * 4);
+    camera.updateProjectionMatrix();
+    controls.update();
+  }
+}
+
+// ---------- info lines, charts and the leaderboard (text messages) ----------
+
+const infoBox = document.getElementById("info");
+function showInfo(lines) {
+  infoBox.replaceChildren(...lines.map((line) => Object.assign(document.createElement("div"), { textContent: line })));
+  infoBox.hidden = lines.length === 0;
+}
+
+const chartBox = document.getElementById("charts");
+let chartSeries = []; // [{key, label, canvas, labelEl}]
+const chartPoints = []; // every metrics point so far
+function showChartSeries(series) {
+  chartSeries = series.map((s) => ({ ...s }));
+  chartBox.replaceChildren(
+    ...chartSeries.map((s) => {
+      const panel = document.createElement("div");
+      panel.className = "chart";
+      s.labelEl = Object.assign(document.createElement("div"), { className: "chart-label", textContent: s.label });
+      s.canvas = Object.assign(document.createElement("canvas"), { width: 260, height: 64 });
+      panel.append(s.labelEl, s.canvas);
+      return panel;
+    }),
+  );
+  chartBox.hidden = chartSeries.length === 0;
+  drawCharts();
+}
+
+function drawCharts() {
+  for (const s of chartSeries) {
+    const values = chartPoints.filter((p) => p[s.key] !== undefined).map((p) => [p.iteration, p[s.key]]);
+    const ctx = s.canvas.getContext("2d");
+    const { width, height } = s.canvas;
+    ctx.clearRect(0, 0, width, height);
+    if (values.length === 0) continue;
+    const xs = values.map((v) => v[0]);
+    const ys = values.map((v) => v[1]);
+    const xMin = Math.min(...xs);
+    const xMax = Math.max(...xs, xMin + 1);
+    let yMin = Math.min(...ys);
+    let yMax = Math.max(...ys);
+    if (yMax - yMin < 1e-9) [yMin, yMax] = [yMin - 1, yMax + 1];
+    const px = (x) => 4 + ((x - xMin) / (xMax - xMin)) * (width - 8);
+    const py = (y) => height - 4 - ((y - yMin) / (yMax - yMin)) * (height - 8);
+    ctx.strokeStyle = "#4ea8ff";
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    values.forEach(([x, y], i) => (i === 0 ? ctx.moveTo(px(x), py(y)) : ctx.lineTo(px(x), py(y))));
+    ctx.stroke();
+    const last = ys[ys.length - 1];
+    const shown = Math.abs(last) < 10 ? last.toFixed(3) : last.toFixed(1);
+    s.labelEl.textContent = `${s.label}: ${shown}  (iteration ${xs[xs.length - 1]})`;
+  }
+}
+
+const boardBox = document.getElementById("board");
+function showBoard(message) {
+  const title = Object.assign(document.createElement("div"), { className: "board-title", textContent: message.title });
+  const table = document.createElement("table");
+  const head = table.createTHead().insertRow();
+  for (const column of message.columns) head.append(Object.assign(document.createElement("th"), { textContent: column }));
+  const body = table.createTBody();
+  for (const row of message.rows) {
+    const tr = body.insertRow();
+    row.forEach((cell, i) => {
+      const td = tr.insertCell();
+      if (i === 0 && typeof cell === "string" && cell.startsWith("#")) {
+        // The first cell may be "#rrggbb|name": a colour swatch, then the name.
+        const [color, name] = cell.split("|");
+        const swatch = Object.assign(document.createElement("span"), { className: "legend-swatch" });
+        swatch.style.background = color;
+        td.append(swatch, document.createTextNode(` ${name}`));
+      } else {
+        td.textContent = cell;
+      }
+    });
+  }
+  boardBox.replaceChildren(title, table);
+  boardBox.hidden = false;
+}
+
+function handleText(message) {
+  if (message.type === "scene") showScene(message);
+  else if (message.type === "info") showInfo(message.lines);
+  else if (message.type === "charts") showChartSeries(message.series);
+  else if (message.type === "metrics") {
+    chartPoints.push(...message.points);
+    drawCharts();
+  } else if (message.type === "board") showBoard(message);
+}
+
 // ---------- WebSocket stream ----------
 
 let latestPoses = null; // newest frame not drawn yet
@@ -213,6 +398,10 @@ function connect() {
   socket.binaryType = "arraybuffer";
   socket.onopen = () => setStatus("connected");
   socket.onmessage = (event) => {
+    if (typeof event.data === "string") {
+      handleText(JSON.parse(event.data)); // scene, info, charts, metrics, board: see server.py
+      return;
+    }
     latestPoses = new Float32Array(event.data);
     framesReceived++;
   };

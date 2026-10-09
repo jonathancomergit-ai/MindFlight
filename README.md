@@ -30,3 +30,14 @@ Press **R** to start over. [docs/level0.md](docs/level0.md) explains what you se
 tick **size ×10** to see real-scale drones from far away. The server only listens on this machine.
 
 `python -m mindflight.viewer --fake --n 64` streams a grid of fake bobbing drones instead (no physics).
+
+## Train and watch a brain learn
+
+| Level | Watch the trained policy | Train it yourself | Explained |
+|---|---|---|---|
+| 1 Hover | `python -m mindflight.play --policy policies/hover.pt` | `python -m mindflight.train --task hover --view` | [docs/level1.md](docs/level1.md) |
+
+- `--view` opens the live viewer while training: the newest policy flies, and learning curves grow in the corner.
+- Each training run writes `runs/<task>/<date-time>/` with `metrics.jsonl`, `latest.pt` and `best.pt`.
+- `python -m mindflight.evaluate policies/hover.pt` scores a policy on 1,000 fixed test starts.
+- `python scripts/plot_run.py runs/hover/<run> curves.png` draws a run's learning curves.
