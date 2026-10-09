@@ -67,7 +67,8 @@ def test_action_scaling():
     sp = attitude_action_to_setpoint(torch.tensor([[0.0, 1.0, -1.0, 0.5], [1.0, 0, 0, 0], [-1.0, 0, 0, 0]]))
     assert sp[0, 0].item() == pytest.approx(P.weight_n)
     assert sp[0, 1:].tolist() == pytest.approx([math.radians(30), math.radians(-30), math.radians(90)])
-    assert sp[1, 0].item() == pytest.approx(P.thrust_to_weight * P.weight_n)  # full thrust
+    assert sp[1, 0].item() == pytest.approx(P.max_command_thrust_n)  # full: the most the radio can command
+    assert P.max_command_thrust_n / P.weight_n == pytest.approx(1.66, abs=0.01)
     assert sp[2, 0].item() == 0.0  # clamped at zero
 
 

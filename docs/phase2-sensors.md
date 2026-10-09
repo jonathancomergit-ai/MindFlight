@@ -10,9 +10,15 @@ All tests: 1,000 flights, attitude mode, every drone randomized (`real_world=tru
 | Brain | Lighthouse, within 10 cm | Flow deck, within 15 cm | Crashes |
 |---|---|---|---|
 | hover, perfect data (`hover_attitude.pt`) | 97.4 % | 81.6 % | 0.3–0.8 % |
-| **hover, realistic data (`real_hover.pt`)** | **99.8 %** | **95.3 %** | **0 %** |
+| **hover, realistic data (`real_hover.pt`)** | **99.9 %** | **96.4 %** | **0 %** |
 | waypoint, perfect data (`waypoint_attitude.pt`) | 44.9 % | 33.2 % | 7–16 % |
-| **waypoint, realistic data (`real_waypoint.pt`)** | **95.8 %** | **94.9 %** (just under the 95 % bar) | **0.1 %** |
+| **waypoint, realistic data (`real_waypoint.pt`)** | **96.3 %** | **95.6 %** | **0.1 %** |
+
+On 2,000 more flights: Flow deck 15 cm 95.7 % (hover) and 95.7 % (waypoint); Lighthouse 10 cm 100 % and 96.3 %.
+
+The shipped brains were fine-tuned with the **real thrust ceiling**: the firmware's top thrust command (60000 of
+65535) gives about 1.66 × the drone's weight, less than the motors' 2.25 ×. Found by the deploy work (P4). Training
+with the real ceiling made both brains slightly better, and the waypoint brain cleared the 95 % bar (it was at 94.9 %).
 
 ```
 python -m mindflight.train --task hover --env action_mode=attitude sensors=flowdeck real_world=true --init policies/hover_attitude.pt --reset-std 0.15
@@ -63,8 +69,8 @@ So we measured the sensor limit: a perfect controller that sits exactly where it
 | Lighthouse | 100 % | 100 % |
 | Flow deck | **54 %** | 98.7 % |
 
-No brain can beat 54 % at 10 cm with a Flow deck. Ours gets 50.8 %, close to that wall. At 15 cm the limit is
-98.7 % and ours gets 95.3 %. If you want 10 cm accuracy on the real drone, buy the Lighthouse kit.
+No brain can beat 54 % at 10 cm with a Flow deck. Ours gets about 51 %, close to that wall. At 15 cm the limit
+is 98.7 % and ours gets 96.4 %. If you want 10 cm accuracy on the real drone, buy the Lighthouse kit.
 
 ## What went wrong first
 

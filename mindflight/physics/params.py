@@ -71,6 +71,12 @@ class CrazyflieParams:
     low_battery_v: float = 3.2  # firmware DEFAULT_BAT_LOW_VOLTAGE (platform_defaults_cf2.h): land below this
 
     @property
+    def max_command_thrust_n(self) -> float:
+        """The most total thrust the PC can ask the real drone for: 4 motors at thrust_command_max (N).
+        For the Crazyflie: 4 · 0.12 N · 60000/65535 = 0.44 N, about 1.66 × its weight (its motors could do 2.25 ×)."""
+        return 4 * self.firmware_motor_thrust_max_n * self.thrust_command_max / 65535
+
+    @property
     def weight_n(self) -> float:
         """Force of gravity on the drone, m * g (N)."""
         return self.mass_kg * GRAVITY_MPS2
