@@ -170,9 +170,10 @@ class PolicySource:
 
     def scene(self) -> dict:
         """The task's objects as a "scene" message, moved to each drone's grid spot."""
-        objects = self.env.display_objects()
+        # One copy to the CPU first: on the GPU, every .tolist() below would be its own slow round trip.
+        objects = {k: v.cpu() if torch.is_tensor(v) else v for k, v in self.env.display_objects().items()}
         scene: dict = {"type": "scene"}
-        offsets = self.offsets
+        offsets = self.offsets.cpu()
         shared = self.layout == "shared"
 
         if "targets" in objects:
@@ -186,7 +187,7 @@ class PolicySource:
             headings = objects["gate_heading"]  # (N, G)
             opening = objects["gate_opening"]  # (N,)
             next_gate = objects["next_gate"]  # (N,)
-            racing = self.racing_mask()
+            racing = self.racing_mask().cpu()
             if shared and racing.any():
                 next_gate = next_gate[racing]  # gate colours follow only the drones still in the running
             n_gates = centres.shape[1]

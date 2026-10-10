@@ -24,6 +24,19 @@ All seven levels are done. Each score is from 1,000 fixed test flights with the 
 | 5 Sturdy | survives gusts and ±20 % mass; beats the non-randomized policy | 97.4 % vs 84.6 % (77.8 % vs 56.0 % in 2× wind) |
 | 6 Race | ≥ 3 policies race live with a leaderboard | racer won 96 of 100 rounds (3.36 s laps vs 3.68 s) |
 
+## The Hub: everything in one page
+
+Double-click **`MindFlight Hub.bat`**, or run:
+
+```
+python -m mindflight.hub
+```
+
+Your browser opens with a sidebar listing every show: packs, intercept, follow-me, the fake-Crazyflie mission, the
+real-world brains, every Phase 1 skill, the race, live training and the raw physics test. Click one to switch
+(or press ↑ ↓). Speed buttons give slow motion. **R** restarts, **H** hides the sidebar. Shows you leave keep flying,
+so going back is instant; live training stops when you leave it. Close the window (or Ctrl+C) to stop.
+
 ## Run the tests
 
 ```

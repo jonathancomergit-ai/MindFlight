@@ -45,6 +45,10 @@ Message types the page understands (all coordinates in metres, world frame):
     {"type": "charts", "series": [{"key": "...", "label": "..."}, ...]} which metrics to plot
     {"type": "metrics", "points": [{"iteration": 1, "<key>": value, ...}, ...]}   new points for the charts
     {"type": "board", "title": "...", "columns": [...], "rows": [[...], ...]}     a table (the race leaderboard)
+    {"type": "hub", "generation": g, "shows": [...], "current": id, ...}   the hub's sidebar (see mindflight/hub.py)
+
+A source with a `generation` attribute (the hub) can start over: when it changes, every page is sent all its state
+messages and chart points again, as if it had just connected.
 """
 
 import asyncio
@@ -193,9 +197,16 @@ def create_app(
                 points_sent += len(new_points)
                 await websocket.send_text(json.dumps({"type": "metrics", "points": new_points}))
 
+        generation = getattr(source, "generation", 0)
+
         async def send_frames() -> None:
+            nonlocal generation, points_sent
             next_send_s = time.perf_counter()
             while True:
+                if getattr(source, "generation", 0) != generation:  # the hub switched shows: send everything again
+                    generation = source.generation
+                    last_sent.clear()
+                    points_sent = 0
                 await websocket.send_bytes(encode_frame(source.frame(time.perf_counter() - start_s)))
                 await send_text_messages()
                 next_send_s += 1 / FRAME_RATE_HZ
