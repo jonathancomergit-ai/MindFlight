@@ -37,6 +37,7 @@ SHOW = {
     "gates": ("shared", 8, 0.0, 20.0),
     "obstacles": ("grid", 4, 10.0, None),
     "race": ("shared", 8, 0.0, 20.0),
+    "follow": ("grid", 4, 16.0, None),
     "intercept": ("grid", 4, 12.0, None),
     "pack": ("grid", 24, 9.0, None),  # 4 packs of 6; spacing is between packs (worlds), not drones
 }

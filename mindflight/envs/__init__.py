@@ -4,6 +4,7 @@
 """
 
 from mindflight.envs.base import DroneEnv
+from mindflight.envs.follow import FollowEnv
 from mindflight.envs.gates import GatesEnv
 from mindflight.envs.hover import HoverEnv
 from mindflight.envs.intercept import InterceptEnv
@@ -20,6 +21,7 @@ TASKS: dict[str, type[DroneEnv]] = {
     ObstaclesEnv.name: ObstaclesEnv,
     RaceEnv.name: RaceEnv,
     SturdyEnv.name: SturdyEnv,
+    FollowEnv.name: FollowEnv,
     InterceptEnv.name: InterceptEnv,
     PackEnv.name: PackEnv,
 }
