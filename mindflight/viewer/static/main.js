@@ -47,10 +47,22 @@ const controls = new OrbitControls(camera, renderer.domElement);
 controls.target.set(0, 0, 1);
 controls.update();
 
-window.addEventListener("resize", () => {
-  camera.aspect = window.innerWidth / window.innerHeight;
+// With the hub's sidebar open, centre the picture in the part of the window you can see (right of the sidebar):
+// the camera renders a view `sidebar` pixels wider than that part, with the extra on the left, under the sidebar.
+const SIDEBAR_PX = 300;
+function sidebarWidth() {
+  return hubVisible && hubState && window.innerWidth > 700 ? SIDEBAR_PX : 0;
+}
+function updateCameraView() {
+  const [width, height, covered] = [window.innerWidth, window.innerHeight, sidebarWidth()];
+  camera.aspect = (width - covered) / height;
+  if (covered) camera.setViewOffset(width - covered, height, -covered, 0, width, height);
+  else camera.clearViewOffset();
   camera.updateProjectionMatrix();
+}
+window.addEventListener("resize", () => {
   renderer.setSize(window.innerWidth, window.innerHeight);
+  updateCameraView();
 });
 
 // ---------- one drone, at real scale ----------
@@ -87,7 +99,7 @@ function rotorGeometry(front) {
 
 const GROUP_COLORS = [0x6fdc8c, 0xff8389, 0x4ea8ff, 0xc08cff]; // green, red, blue, purple
 const PLAIN_ROTOR_COLOR = new THREE.Color(0xc8d0da); // light grey, for drones in no group
-const groups = config.groups ?? []; // [{name, motors, expect, first, count}], drones first .. first + count - 1
+let groups = config.groups ?? []; // [{name, motors, expect, first, count}], drones first .. first + count - 1
 
 function groupColor(groupIndex) {
   return new THREE.Color(GROUP_COLORS[groupIndex % GROUP_COLORS.length]);
@@ -127,7 +139,13 @@ function ensureCapacity(nDrones) {
     scene.add(mesh);
     return mesh;
   });
+  colorRotors();
+}
+
+function colorRotors() {
+  if (meshes.length === 0) return;
   for (let i = 0; i < capacity; i++) meshes[BACK_ROTORS].setColorAt(i, droneColor(i));
+  meshes[BACK_ROTORS].instanceColor.needsUpdate = true;
 }
 
 const sizeToggle = document.getElementById("size-toggle");
@@ -171,23 +189,27 @@ function setStatus(text) {
 
 // Legend: one line per group, "■ name  motors → what you should see".
 const legend = document.getElementById("legend");
-groups.forEach((group, groupIndex) => {
-  const row = document.createElement("div");
-  row.className = "legend-row";
-  const swatch = document.createElement("span");
-  swatch.className = "legend-swatch";
-  swatch.style.background = `#${groupColor(groupIndex).getHexString()}`;
-  const name = document.createElement("b");
-  name.textContent = group.name;
-  const motors = document.createElement("span");
-  motors.textContent = group.motors;
-  const expect = document.createElement("span");
-  expect.className = "legend-expect";
-  expect.textContent = `→ ${group.expect}`;
-  row.append(swatch, name, motors, expect);
-  legend.append(row);
-});
-legend.hidden = groups.length === 0;
+function showLegend() {
+  legend.replaceChildren();
+  groups.forEach((group, groupIndex) => {
+    const row = document.createElement("div");
+    row.className = "legend-row";
+    const swatch = document.createElement("span");
+    swatch.className = "legend-swatch";
+    swatch.style.background = `#${groupColor(groupIndex).getHexString()}`;
+    const name = document.createElement("b");
+    name.textContent = group.name;
+    const motors = document.createElement("span");
+    motors.textContent = group.motors;
+    const expect = document.createElement("span");
+    expect.className = "legend-expect";
+    expect.textContent = `→ ${group.expect}`;
+    row.append(swatch, name, motors, expect);
+    legend.append(row);
+  });
+  legend.hidden = groups.length === 0;
+}
+showLegend();
 
 // Restart: the button or the R key asks the server to start the sim over (POST /reset).
 async function restartSim() {
@@ -317,14 +339,19 @@ function showScene(message) {
 // The first time we learn how big the world is, grow the floor grid and point the camera at the middle of it.
 let viewFitted = false;
 function fitView(points) {
-  if (viewFitted || points.length === 0) return;
+  if (viewFitted) return;
+  if (lastPoses) {
+    // The drones are part of the world too (the hub's physics test has no scene objects at all).
+    for (let o = 0; o + 1 < lastPoses.length; o += VALUES_PER_DRONE) points.push([lastPoses[o], lastPoses[o + 1]]);
+  }
+  if (points.length === 0) return;
   viewFitted = true;
   const xs = points.map((p) => p[0]);
   const ys = points.map((p) => p[1]);
   const [minX, maxX, minY, maxY] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];
   const centreX = (minX + maxX) / 2;
   const centreY = (minY + maxY) / 2;
-  const extent = Math.max(maxX - minX, maxY - minY, 4); // metres the camera has to take in
+  const extent = 1.3 * Math.max(maxX - minX, maxY - minY, 4); // metres the camera has to take in, plus a margin
   const reach = Math.max(Math.abs(minX), Math.abs(maxX), Math.abs(minY), Math.abs(maxY));
   const size = 2 * Math.ceil(reach + 2);
   if (size > gridSizeM) grid.scale.setScalar(size / gridSizeM);
@@ -423,7 +450,133 @@ function handleText(message) {
     chartPoints.push(...message.points);
     drawCharts();
   } else if (message.type === "board") showBoard(message);
+  else if (message.type === "hub") showHub(message);
 }
+
+// ---------- the hub's sidebar (python -m mindflight.hub) ----------
+
+const hubBox = document.getElementById("hub");
+const hubOpen = document.getElementById("hub-open");
+let hubGeneration = null;
+let hubState = null;
+let hubPending = null; // the show we asked for and are waiting on
+let hubVisible = true;
+let framesSinceSwitch = 0;
+
+function setHubVisible(visible) {
+  hubVisible = visible;
+  hubBox.hidden = !visible;
+  hubOpen.hidden = visible;
+  document.body.classList.toggle("hub-open", visible);
+  document.body.classList.toggle("hub-closed", !visible);
+  updateCameraView();
+}
+
+// A new show: forget everything the old one drew, then let its own messages fill the page again.
+function startNewShow(message) {
+  clearScene();
+  showInfo([]);
+  chartPoints.length = 0;
+  showChartSeries([]);
+  boardBox.hidden = true;
+  groups = message.groups ?? [];
+  showLegend();
+  colorRotors();
+  grid.scale.setScalar(1);
+  viewFitted = false;
+  framesSinceSwitch = 0;
+}
+
+function element(tag, className, text) {
+  const el = document.createElement(tag);
+  if (className) el.className = className;
+  if (text !== undefined) el.textContent = text;
+  return el;
+}
+
+function showHub(message) {
+  if (hubState === null) {
+    hubState = message;
+    setHubVisible(window.innerWidth > 700);
+  }
+  if (message.generation !== hubGeneration) {
+    hubGeneration = message.generation;
+    startNewShow(message);
+    hubPending = null;
+  }
+  hubState = message;
+  document.getElementById("reset-row").hidden = !message.resettable;
+  document.getElementById("loop-note").textContent = message.note ?? "";
+  document.getElementById("hub-error").textContent = message.error ?? "";
+
+  document.getElementById("hub-speed").replaceChildren(
+    element("span", "label", "speed"),
+    ...message.speeds.map((s) => {
+      const chip = element("button", `hub-chip${s === message.speed ? " on" : ""}`, `${s}×`);
+      chip.type = "button";
+      chip.addEventListener("click", () => fetch(`/speed?value=${s}`, { method: "POST" }));
+      return chip;
+    }),
+  );
+
+  const loading = message.loading ?? hubPending;
+  const byGroup = new Map();
+  for (const show of message.shows) {
+    if (!byGroup.has(show.group)) byGroup.set(show.group, []);
+    byGroup.get(show.group).push(show);
+  }
+  document.getElementById("hub-shows").replaceChildren(
+    ...[...byGroup].map(([name, shows]) => {
+      const box = element("div", "hub-group");
+      box.append(element("div", "hub-group-name", name));
+      for (const show of shows) {
+        const button = element("button", "hub-show");
+        button.type = "button";
+        if (show.id === message.current) button.classList.add("current");
+        if (show.id === loading) button.classList.add("loading");
+        const top = element("div", "hub-show-top");
+        top.append(element("span", "hub-show-title", show.title), element("span", "hub-show-score", show.score));
+        button.append(top, element("div", "hub-show-blurb", show.blurb));
+        button.addEventListener("click", () => pickShow(show.id));
+        box.append(button);
+      }
+      return box;
+    }),
+  );
+}
+
+async function pickShow(id) {
+  if (!hubState || id === hubState.current || hubPending) return;
+  hubPending = id;
+  showHub(hubState); // mark it loading right away
+  const reply = await fetch(`/show/${id}`, { method: "POST" });
+  if (!reply.ok) {
+    hubPending = null;
+    showHub(hubState);
+    const detail = await reply.json().then((j) => j.detail).catch(() => "");
+    document.getElementById("hub-error").textContent = detail || "couldn't switch";
+  }
+}
+
+function stepShow(direction) {
+  if (!hubState) return;
+  const ids = hubState.shows.map((s) => s.id);
+  pickShow(ids[(ids.indexOf(hubState.current) + direction + ids.length) % ids.length]);
+}
+
+document.getElementById("hub-hide").addEventListener("click", () => setHubVisible(false));
+hubOpen.addEventListener("click", () => setHubVisible(true));
+window.addEventListener("keydown", (event) => {
+  if (!hubState || event.ctrlKey || event.metaKey || event.altKey) return;
+  if (event.key === "h" || event.key === "H") setHubVisible(!hubVisible);
+  else if (event.key === "ArrowDown") {
+    event.preventDefault();
+    stepShow(+1);
+  } else if (event.key === "ArrowUp") {
+    event.preventDefault();
+    stepShow(-1);
+  }
+});
 
 // ---------- WebSocket stream ----------
 
@@ -463,6 +616,8 @@ renderer.setAnimationLoop((nowMs) => {
     showFrame(latestPoses);
     lastPoses = latestPoses;
     latestPoses = null;
+    // A show with no scene objects (the physics test) never fits the view from its scene: fit it to the drones.
+    if (hubState && !viewFitted && ++framesSinceSwitch > 15) fitView([]);
   }
   controls.update();
   renderer.render(scene, camera);
