@@ -1,16 +1,16 @@
-"""Give an existing policy more observation inputs, so it can start a task whose observation is longer.
+"""Give a trained brain more inputs, so a new task with a longer observation can start from it.
 
-    python scripts/widen_policy.py policies/waypoint_attitude.pt --task follow --out runs/follow/init.pt
-    python -m mindflight.train --task follow --init runs/follow/init.pt --reset-std 0.15
+    python scripts/widen_policy.py policies/waypoint_attitude.pt --task pack --out runs/pack/widened.pt
+    python -m mindflight.train --task pack --init runs/pack/widened.pt --reset-std 0.15
 
-`--init` needs the same observation size. A new task that keeps the old observation as its *first* columns and adds
-more after them (follow keeps waypoint's 22 and adds 12) can still start from the old brain:
+Why: the pack task's first 22 observation columns mean exactly what the waypoint task's 22 mean (velocity, rotation,
+spin, last action, target − position). It just adds more after them (the pack-mates). A network's first layer
+computes  h = W · x + b. If we give W extra columns of **zeros** for the new inputs, the widened brain flies
+exactly like the old one (the new inputs are multiplied by 0) while gradients can still grow those columns from
+zero. So learning starts from "flies to its own slot" instead of from nothing.
 
-- the first layer of both networks gets new input columns with **zero** weights, so at first the new inputs change
-  nothing and the widened policy flies exactly like the old one;
-- the observation scaling (`obs_norm`) keeps the old columns' mean and variance; the new columns get theirs from a
-  short rollout of the new task;
-- the scaling's sample count is cut to 1 M, so the statistics can follow the new task within a few iterations.
+The new columns' observation scaling (mean and spread) is measured from a short flight of the new task, so the new
+inputs arrive at the network already about mean 0, spread 1.
 """
 
 import argparse
@@ -19,62 +19,94 @@ from pathlib import Path
 import torch
 
 from mindflight.envs import make_env
-from mindflight.rl.train import load_policy
+from mindflight.rl.ppo import ActorCritic, PPOConfig
+from mindflight.rl.train import load_policy, save_checkpoint
 
-NEW_COUNT = 1e6
+
+def widen(model: ActorCritic, new_obs_size: int) -> ActorCritic:
+    """A copy of `model` that takes `new_obs_size` inputs: the old ones first, the new ones with zero weights."""
+    old_obs_size = model.obs_norm.mean.shape[0]
+    if new_obs_size < old_obs_size:
+        raise ValueError(f"can only widen: {old_obs_size} -> {new_obs_size}")
+    return remap(model, list(range(old_obs_size)) + [None] * (new_obs_size - old_obs_size))
+
+
+def remap(model: ActorCritic, columns: list[int | None]) -> ActorCritic:
+    """A copy of `model` whose input i is the old input columns[i] (None = a new input, zero weights).
+
+    Old inputs that are left out are dropped. That is the same as always feeding them their average: after
+    normalization the average is 0, and 0 × weight adds nothing. So `remap` can also shrink an observation."""
+    new_obs_size = len(columns)
+    hidden = tuple(layer.out_features for layer in model.actor if isinstance(layer, torch.nn.Linear))[:-1]
+    action_size = model.log_std.shape[0]
+    wide = ActorCritic(new_obs_size, action_size, hidden, normalize_obs=model.obs_norm.enabled)
+    state = {k: v.clone() for k, v in model.state_dict().items()}
+    old_mean, old_var = state["obs_norm.mean"], state["obs_norm.var"]
+    mean, var = torch.zeros(new_obs_size), torch.ones(new_obs_size)
+    for net in ("actor", "critic"):
+        old_weight = state[f"{net}.0.weight"]  # the first Linear layer: (hidden, old_obs)
+        new_weight = torch.zeros(old_weight.shape[0], new_obs_size)
+        for i, old in enumerate(columns):
+            if old is not None:
+                new_weight[:, i] = old_weight[:, old]
+                mean[i], var[i] = old_mean[old], old_var[old]
+        state[f"{net}.0.weight"] = new_weight
+    state["obs_norm.mean"], state["obs_norm.var"] = mean, var
+    wide.load_state_dict(state)
+    return wide
 
 
 @torch.no_grad()
-def widen(path: str, task: str, env_kwargs: dict, device: str, n: int = 4096, steps: int = 100) -> dict:
-    """Load checkpoint `path` and return a checkpoint dict for `task` with the first layers widened."""
-    model, checkpoint = load_policy(path, device)
-    kwargs = dict(checkpoint.get("env_kwargs", {}))
-    kwargs.update(env_kwargs)
-    env = make_env(task, n, device=device, seed=0, **kwargs)
-    old_size = model.obs_norm.mean.shape[0]
-    new_size = env.obs_size
-    if new_size < old_size:
-        raise ValueError(f"{task} has {new_size} observations, fewer than the policy's {old_size}")
-
-    # Statistics of the new columns, from the old policy flying the new task (it only reads the old columns).
-    obs = env.reset()
+def measure_new_columns(model: ActorCritic, task: str, env_kwargs: dict, old_obs_size: int, steps: int = 100) -> None:
+    """Fly `steps` policy steps of the new task with the widened brain and set the new columns' mean and spread."""
+    env = make_env(task, 1200, device="cpu", seed=1, **env_kwargs)
+    obs = env.reset(stagger=True)
     seen = []
     for _ in range(steps):
         seen.append(obs)
-        obs, _, _, _ = env.step(model.act(obs[:, :old_size], deterministic=True))
+        obs, _, _, _ = env.step(model.act(obs, deterministic=True))
     seen = torch.cat(seen)
-
-    state = {k: v.clone() for k, v in model.state_dict().items()}
-    for net in ("actor", "critic"):
-        weight = state[f"{net}.0.weight"]
-        state[f"{net}.0.weight"] = torch.cat((weight, weight.new_zeros(weight.shape[0], new_size - old_size)), dim=1)
-    mean, var = seen.mean(0), seen.var(0, unbiased=False).clamp_min(1e-4)
-    mean[:old_size], var[:old_size] = state["obs_norm.mean"], state["obs_norm.var"]
-    state["obs_norm.mean"], state["obs_norm.var"] = mean, var
-    state["obs_norm.count"] = torch.tensor(min(NEW_COUNT, float(state["obs_norm.count"])))
-    return {
-        "task": task,
-        "env_kwargs": kwargs,
-        "iteration": 0,
-        "config": checkpoint["config"],
-        "model": state,
-        "widened_from": str(path),
-    }
+    model.obs_norm.mean[old_obs_size:] = seen[:, old_obs_size:].mean(0)
+    model.obs_norm.var[old_obs_size:] = seen[:, old_obs_size:].var(0).clamp_min(1e-4)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("policy")
-    parser.add_argument("--task", required=True)
-    parser.add_argument("--out", required=True)
-    parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
-    parser.add_argument("--env", nargs="*", default=[], metavar="KEY=VALUE")
+    parser.add_argument("policy", help="the trained checkpoint to start from")
+    parser.add_argument("--task", required=True, help="the new task (its first columns must mean the same)")
+    parser.add_argument("--out", required=True, help="where to write the widened checkpoint")
+    parser.add_argument("--env", nargs="*", default=[], metavar="KEY=VALUE", help="task options (strings or numbers)")
+    parser.add_argument(
+        "--columns", default=None, help='old columns to keep, in order, e.g. "0:40,52,53:62" (default: all, then new)'
+    )
     args = parser.parse_args()
-    env_kwargs = dict(item.split("=", 1) for item in args.env)
-    checkpoint = widen(args.policy, args.task, env_kwargs, args.device)
-    Path(args.out).parent.mkdir(parents=True, exist_ok=True)
-    torch.save(checkpoint, args.out)
-    print(f"{args.policy} -> {args.out} ({args.task}, obs {checkpoint['model']['obs_norm.mean'].shape[0]})")
+
+    model, checkpoint = load_policy(args.policy, "cpu")
+    env_kwargs = dict(checkpoint.get("env_kwargs", {}))
+    for item in args.env:
+        key, value = item.split("=", 1)
+        env_kwargs[key] = value
+    old_obs_size = model.obs_norm.mean.shape[0]
+    new_obs_size = make_env(args.task, 12, device="cpu", **env_kwargs).obs_size
+    if args.columns:
+        columns: list[int | None] = []
+        for part in args.columns.split(","):
+            low, _, high = part.partition(":")
+            columns += list(range(int(low), int(high))) if high else [int(low)]
+        columns += [None] * (new_obs_size - len(columns))
+        wide = remap(model, columns)
+    else:
+        wide = widen(model, new_obs_size)
+    if args.columns is None:  # (with --columns, new columns keep mean 0, spread 1)
+        measure_new_columns(wide, args.task, env_kwargs, old_obs_size)
+
+    class Holder:  # save_checkpoint wants something with .model and .config
+        pass
+
+    holder = Holder()
+    holder.model, holder.config = wide, PPOConfig(**checkpoint["config"])
+    save_checkpoint(Path(args.out), holder, args.task, env_kwargs, 0, {"widened_from": args.policy})
+    print(f"{args.policy} ({old_obs_size} inputs) -> {args.out} ({new_obs_size} inputs, task {args.task})")
 
 
 if __name__ == "__main__":

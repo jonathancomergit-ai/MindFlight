@@ -348,37 +348,24 @@ def test_display_objects_and_viewer_scene():
     assert torch.equal(walking.display_objects()["lines"], torch.zeros(4, 1, 6))  # no pointing line
 
 
-def test_widened_policy_flies_like_the_old_one(tmp_path):
-    """scripts/widen_policy.py: the new inputs start with zero weights, so the actions don't change."""
-    import importlib.util
-    from dataclasses import asdict
-    from pathlib import Path
-
+def test_widened_policy_flies_like_the_old_one():
+    """scripts/widen_policy.py on waypoint -> follow: the new inputs start with zero weights, so nothing changes."""
     from mindflight.rl.ppo import ActorCritic, PPOConfig
 
-    script = Path(__file__).parent.parent / "scripts" / "widen_policy.py"
-    spec = importlib.util.spec_from_file_location("widen_policy", script)
-    widen_policy = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(widen_policy)
-
+    widen_policy = load_script("widen_policy")
     torch.manual_seed(0)
-    config = PPOConfig()
-    old = ActorCritic(22, 4, config.hidden)
+    old = ActorCritic(22, 4, PPOConfig().hidden)
     with torch.no_grad():
         old.obs_norm.mean.uniform_(-1, 1)
         old.obs_norm.var.uniform_(0.5, 2)
         for p in old.actor.parameters():
             p.normal_(0, 0.1)
-    path = tmp_path / "old.pt"
-    torch.save({"task": "waypoint", "env_kwargs": {"action_mode": "attitude"}, "iteration": 1,
-                "config": asdict(config), "model": old.state_dict()}, path)
-    checkpoint = widen_policy.widen(str(path), "follow", {}, "cpu", n=64, steps=5)
-    new = ActorCritic(35, 4, config.hidden)
-    new.load_state_dict(checkpoint["model"])
-    obs = torch.randn(100, 35)
+    follow_obs = make(2).obs_size
+    new = widen_policy.widen(old, follow_obs)
+    widen_policy.measure_new_columns(new, "follow", {"difficulty": 1.0}, 22, steps=5)
+    obs = torch.randn(100, follow_obs)
     assert torch.allclose(new.act(obs, deterministic=True), old.act(obs[:, :22], deterministic=True), atol=1e-5)
     assert torch.allclose(new.value(obs), old.value(obs[:, :22]), atol=1e-5)
-    assert checkpoint["task"] == "follow"
 
 
 def load_script(name: str):

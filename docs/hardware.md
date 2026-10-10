@@ -55,18 +55,22 @@ Bitcraze's own start guide: [Getting started with the Crazyflie 2.1+](https://ww
 
 ## First flight checklist
 
+Fly the **real-world brains** (`policies/real_hover.pt`, `policies/real_waypoint.pt`). They were trained on noisy,
+late sensors and randomized drones (docs/phase2-sensors.md). The `*_attitude.pt` brains were trained on perfect
+data: on realistic drones the waypoint one crashed up to 16 % of the time.
+
 Do these in order. Do not skip one.
 
 | # | Check |
 |---|---|
-| 1 | The same brain and mission already flew in SITL: `python -m mindflight.deploy --policy policies/hover_attitude.pt --sitl` |
+| 1 | The same brain and mission already flew in SITL: `python -m mindflight.deploy --policy policies/real_hover.pt --sitl` |
 | 2 | Props on the right motors (the arrows on the arms), pushed fully down |
 | 3 | Battery charged (4.1 V or more in cfclient), strapped down, deck clicked in |
 | 4 | Open space: 2 m clear on every side, nothing above. People behind you. Soft floor or a net |
 | 5 | Textured floor (Flow deck) or Lighthouse calibrated |
 | 6 | Drone on the floor, level, nose pointing along +x (away from you) |
-| 7 | Measure the hover command: `python -m mindflight.deploy --policy policies/hover_attitude.pt --uri --calibrate-hover --height 0.3` |
-| 8 | First real flight: a **0.3 m hover**, nothing else: `python -m mindflight.deploy --policy policies/hover_attitude.pt --uri --height 0.3 --hover-command <number from step 7>` |
+| 7 | Measure the hover command: `python -m mindflight.deploy --policy policies/real_hover.pt --uri --calibrate-hover --height 0.3` |
+| 8 | First real flight: a **0.3 m hover**, nothing else: `python -m mindflight.deploy --policy policies/real_hover.pt --uri --height 0.3 --hover-command <number from step 7>` |
 | 9 | Hand on the keyboard the whole time. **k = motors off** (Ctrl+C works too) |
 | 10 | Read the flight log (`runs/flights/`) before trying waypoints |
 
