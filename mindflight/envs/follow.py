@@ -12,21 +12,22 @@ The three modes (the policy is told which one with a one-hot, and the mode can c
 | orbit | on a 2 m circle round the person, 1.5 m up, going round at ω = 0.3–0.7 rad/s (either way):  p + 2 · (cos θ, sin θ), θ += ω · dt |
 | point | the person stops and "points": a spot 2–4 m away in some direction, 1.5 m up. A new spot every 4–6 s. Until the first spot comes, hold the follow point. |
 
-**The camera.** A real drone would find the person with a camera and a pose detector, which is noisy and late. So
-the policy never sees the true person. It sees an estimate that is:
-- **late** by 3–5 policy steps (60–100 ms, random per episode),
-- **noisy**: position ± σ with σ = 5–10 cm (random per episode), velocity ± 0.2 m/s, heading ± 0.05 rad (about 3°),
-  fresh noise every step, as from a pose detector plus a tracker.
-The target the policy is shown is worked out from that estimate. The reward and the scores use the *true* target, so
-the policy has to learn to cope (for example to lead a jogging person a little). `camera=False` turns this off.
+**Sensing the person.** The policy never sees the true person. It sees the latest measurement from a person sensor
+(`person_sensor=`, see `person_sensor.py`): "camera" (default: a camera on the drone's nose, 30 Hz, 60–100 ms late,
+σ = 2 % of range + 3 cm, only within its 60–80° view), "gps_rtk" (10 Hz, 100 ms, 2–3 cm), "gps" (a phone: 1–5 Hz,
+2–3 m wandering error) or "perfect". The target the policy is shown is worked out from that measurement. The reward
+and the scores use the *true* target, so the policy has to cope (for example lead a jogging person a little, and
+with the camera, turn to keep the person in view).
 
-Task observation (15 numbers, all from the camera estimate):
+Task observation (16 numbers, all from the measurement):
 
     0:3    target − drone position (m, world)        (the same first 3 numbers as waypoint, so a waypoint brain can start here)
     3:6    target velocity (m/s, world)               (how the target is moving: person velocity + turning / orbiting)
     6:9    person body centre (z = 0.9 m) − drone position (m)
     9:12   person velocity − drone velocity (m/s)
     12:15  mode one-hot: follow, orbit, point
+    15     age of the measurement (s, up to 5): its delay plus the time since it came. With the camera it keeps
+           growing while the person is out of view.
 
 **Safety.** The drone must keep at least 1 m from the person's body (the cylinder's surface):
 - closer than 0.7 m = crash (−30, episode over),
@@ -39,8 +40,9 @@ to the person's body (m):
     reward = 3 − 0.5 · min(d, 4) + 0.5 · max(0, 1 − d / 0.3) + 0.5 · [d < 0.1]
              − 0.2 · (1 − R_zz) − 0.02 · |ω|² − 0.1 · |a − a_prev|²          (tilt, spin, twitch, as in hover)
              − 1.0 · clamp((1.0 − g) / 0.3, 0, 1)                             (too close: 0 at 1 m, 1 at 0.7 m)
-             − 0.3 · closing speed · clamp((2.0 − g) / 1.0, 0, 1)             (flying at the person, within 2 m)
-    then clamped at ≥ 0;  crash: −30 once, and the episode ends
+             − 0.3 · closing speed · clamp((1.5 − g) / 0.5, 0, 1)             (flying at the person, within 1.5 m)
+    then clamped at ≥ 0;  + 0.3 while the person is in the camera's view (camera only)
+    crash: −30 once, and the episode ends
 
 Crashing must never pay (docs/level1-6 lessons), so the step reward is never below 0 before a crash. The alive
 bonus 3 covers the worst normal case (4 m off and at the 0.7 m line: 3 − 2 − 1 = 0); the clamp covers the rest.
@@ -48,7 +50,9 @@ bonus 3 covers the worst normal case (4 m off and at the 0.7 m line: 3 − 2 −
 Why the closing-speed term: starting from the waypoint brain without it, 55 % of episodes crashed into the person and stayed there for 300
 iterations. Measured: the drone flew straight at a pointed spot at ~3.4 m/s, through the person, 0.9 s after the
 spot came. The 0.7–1.0 m soft zone is crossed in under 0.1 s at that speed, too short to learn from. The closing
-term says "don't fly *at* the person" from 2 m out, while there is still time to curve round.
+term says "don't fly *at* the person" from 1.5 m out, while there is still time to curve round. (It started at
+2 m, but the follow and orbit points are 1.75 m from the body, so it charged the drone for doing its job whenever the
+person slowed down, and the brain learned to hang back 1.5 m behind the follow point.)
 
 Scores (per episode; the doc's "done when" uses them over 1,000 fixed-seed episodes):
 - follow: fraction of follow time within 0.3 m of the true follow point, not counting the first 2 s in the mode,
@@ -62,8 +66,9 @@ import torch
 
 from mindflight.envs.base import POLICY_DT_S
 from mindflight.envs.hover import SUCCESS_RADIUS_M, HoverEnv
+from mindflight.envs.person_sensor import PersonTracker, wrap_angle
 from mindflight.physics.dynamics import OMEGA, POS, QUAT, VEL
-from mindflight.physics.rotations import quat_to_matrix
+from mindflight.physics.rotations import quat_from_axis_angle, quat_multiply, quat_to_matrix
 
 # The person (ASSUMED: an average adult as a simple cylinder).
 PERSON_RADIUS_M = 0.25
@@ -78,10 +83,11 @@ JOG_CHANCE = 0.15
 GAIT_S = (2.0, 5.0)  # a gait (stop / walk / jog) lasts this long
 SPEED_UP_MPS2 = 1.5
 SLOW_DOWN_MPS2 = 2.5
-TURN_TAU_S = 1.0  # turn rate: a random walk pulled back to 0 (Ornstein–Uhlenbeck), time constant...
-TURN_SIGMA_RAD_S = 0.5  # ...and typical size
+TURN_TAU_S = 2.0  # turn rate: a random walk pulled back to 0 (Ornstein–Uhlenbeck), time constant...
+TURN_SIGMA_RAD_S = 0.3  # ...and typical size. (0.5 rad/s with τ = 1 s made people weave all the time.)
 TURN_MAX_RAD_S = 1.2
 SIDEWAYS_ACCEL_MAX_MPS2 = 3.0  # turn rate ≤ this / speed: a jogger can't turn on the spot
+TURN_ACCEL_MAX_RAD_S2 = 2.0  # how fast the turn rate itself can change
 
 # The modes.
 MODES = ("follow", "orbit", "point")
@@ -95,11 +101,10 @@ POINT_EVERY_S = (4.0, 6.0)
 SPOT_LIMIT_M = 6.0  # pointed spots stay in |x|, |y| ≤ 6 m
 MODE_SWITCH_S = (4.0, 10.0)  # with mode switching on, a new mode comes this often
 
-# The camera estimate of the person.
-DELAY_STEPS = (3, 5)  # 60–100 ms at 50 Hz
-POSITION_NOISE_M = (0.05, 0.10)
-VELOCITY_NOISE_MPS = 0.2
-HEADING_NOISE_RAD = 0.05
+# How the drone senses the person: see person_sensor.py.
+AGE_CAP_S = 5.0  # the "how old is my measurement" input is capped here
+VIEW_BONUS = 0.3  # camera: reward per step while the person is in view
+START_YAW_RAD = math.radians(30)  # flights start with the nose within ±30° of the person
 
 # Safety and the arena for the drone.
 CRASH_DISTANCE_M = 0.7
@@ -110,9 +115,13 @@ DRONE_LIMIT_XY_M = 8.5
 DRONE_TOP_M = 4.0
 CRASH_PENALTY = 30.0
 PROXIMITY_WEIGHT = 1.0
-CLOSING_ZONE_M = 2.0  # within 2 m of the body, flying *toward* the person costs a little (full cost inside 1 m)...
+CLOSING_ZONE_M = 1.5  # within 1.5 m of the body, flying *toward* the person costs a little (full inside 1 m)...
 CLOSING_WEIGHT = 0.3  # ...0.3 points a step per m/s of closing speed...
 CLOSING_MAX_MPS = 3.0  # ...counted up to 3 m/s
+
+# Curriculum (see update_curriculum).
+CURRICULUM_CRASH = 0.10
+CURRICULUM_RAMP = 800
 
 # Scoring.
 SETTLE_S = 2.0
@@ -120,11 +129,6 @@ FOLLOW_TOLERANCE_M = 0.3
 ORBIT_TOLERANCE_M = 0.3
 POINT_TOLERANCE_M = 0.15
 POINT_HOLD_S = 0.5
-
-
-def wrap_angle(angle: torch.Tensor) -> torch.Tensor:
-    """Angle (rad) wrapped into [−π, π)."""
-    return torch.remainder(angle + math.pi, 2 * math.pi) - math.pi
 
 
 def person_distance(drone_pos: torch.Tensor, person_xy: torch.Tensor) -> torch.Tensor:
@@ -145,11 +149,12 @@ class FollowEnv(HoverEnv):
 
     mode: "all" (a random mode each episode, switching mid-episode if switch_modes) or one of "follow", "orbit",
           "point" (that mode only, for testing one at a time).
-    camera: True = the policy sees the person through the noisy, late camera estimate; False = perfectly.
+    person_sensor: how the drone senses the person: "camera" (default), "gps_rtk", "gps" or "perfect"
+          (person_sensor.py).
     """
 
     name = "follow"
-    task_obs_size = 15
+    task_obs_size = 16
     has_curriculum = True
     alive_bonus = 3.0
     distance_weight = 0.5
@@ -165,7 +170,7 @@ class FollowEnv(HoverEnv):
         seed: int = 0,
         mode: str = "all",
         switch_modes: bool = True,
-        camera: bool = True,
+        person_sensor: str = "camera",
         difficulty: float | None = None,
         start_difficulty: float = 0.0,
         action_mode: str = "attitude",
@@ -177,12 +182,14 @@ class FollowEnv(HoverEnv):
         self.fixed_difficulty = difficulty is not None
         self.difficulty = float(start_difficulty) if difficulty is None else float(difficulty)
         self.smoothed_crash = 1.0
+        self.curriculum_calls = 0
         if mode != "all" and mode not in MODES:
             raise ValueError(f"mode must be 'all' or one of {MODES}, not {mode!r}")
         self.mode_choice = mode
         self.switch_modes = switch_modes and mode == "all"
-        self.camera = camera
         n, dev = n_envs, self.device
+        self.tracker = PersonTracker(person_sensor, n, dev, self.generator, POLICY_DT_S)
+        self.person_sensor = person_sensor
 
         def zeros(*shape, dtype=torch.float32):
             return torch.zeros(n, *shape, device=dev, dtype=dtype)
@@ -195,16 +202,6 @@ class FollowEnv(HoverEnv):
         self.turn_drive = zeros()  # rad/s, the random-walk part of the turn rate
         self.speed_goal = zeros()
         self.gait_steps_left = zeros(dtype=torch.long)
-
-        # The camera: a short history of the true state (index 0 = now, k = k steps ago) and its noisy, late estimate.
-        self.history_len = DELAY_STEPS[1] + 1
-        self.history = zeros(self.history_len, 6)  # x, y, heading, vx, vy, turn rate
-        self.delay_steps = zeros(dtype=torch.long)
-        self.position_noise_m = zeros()
-        self.seen_xy = zeros(2)
-        self.seen_vel = zeros(2)
-        self.seen_heading = zeros()
-        self.seen_turn_rate = zeros()
 
         # Modes.
         self.mode = zeros(dtype=torch.long)
@@ -238,6 +235,23 @@ class FollowEnv(HoverEnv):
         self.hold_steps = round(POINT_HOLD_S / POLICY_DT_S)
         self.min_window_steps = round(POINT_EVERY_S[0] / POLICY_DT_S)
 
+    # What the drone senses of the person (person_sensor.py): the latest measurement.
+    @property
+    def seen_xy(self) -> torch.Tensor:
+        return self.tracker.seen_xy
+
+    @property
+    def seen_vel(self) -> torch.Tensor:
+        return self.tracker.seen_vel
+
+    @property
+    def seen_heading(self) -> torch.Tensor:
+        return self.tracker.seen_heading
+
+    @property
+    def seen_turn_rate(self) -> torch.Tensor:
+        return self.tracker.seen_turn_rate
+
     # ---------- random pieces ----------
 
     def random_modes(self, n: int) -> torch.Tensor:
@@ -266,16 +280,21 @@ class FollowEnv(HoverEnv):
         return sign * self.uniform(n, low, low + (high - low) * self.difficulty)
 
     def update_curriculum(self, episode_means: dict[str, float]) -> dict[str, float]:
-        """Smoothed crash rate below 3 % -> difficulty + 0.05 (up to 1).
+        """Smoothed crash rate (while training, with exploring actions) below 10 % -> difficulty + 0.05; and in any
+        case at least iterations / 800, so the full task always arrives by iteration 800.
 
         Crashes, not success, drive it: what the difficulty adds (jogging, faster orbits, spots on the far side of
         the person) is what makes the drone hit the person. Started at the full task, the waypoint brain crashed
-        into the person in 55–65 % of flights and never learned its way out (docs/phase2-follow.md)."""
+        into the person in 55–65 % of flights and never learned its way out (docs/phase2-follow.md). The floor
+        is there because exploring actions keep the training crash rate well above the test one."""
+        self.curriculum_calls += 1
         if "episode_crashed" in episode_means:
             self.smoothed_crash = 0.8 * self.smoothed_crash + 0.2 * episode_means["episode_crashed"]
-        if not self.fixed_difficulty and self.smoothed_crash < 0.03 and self.difficulty < 1.0:
-            self.difficulty = min(1.0, round(self.difficulty + 0.05, 2))
-            self.smoothed_crash = 0.05  # wait a few iterations before the next step
+        if not self.fixed_difficulty and self.difficulty < 1.0:
+            if self.smoothed_crash < CURRICULUM_CRASH:
+                self.difficulty = min(1.0, round(self.difficulty + 0.05, 2))
+                self.smoothed_crash = CURRICULUM_CRASH + 0.02  # wait a few iterations before the next step
+            self.difficulty = max(self.difficulty, min(1.0, round(self.curriculum_calls / CURRICULUM_RAMP, 3)))
         return {"difficulty": self.difficulty}
 
     # ---------- reset ----------
@@ -303,24 +322,30 @@ class FollowEnv(HoverEnv):
         self.spot_reached[ids] = False
         self.spot[ids] = 0.0
 
-        # The camera for this episode, and a history as if the person had been there all along.
-        self.delay_steps[ids] = torch.randint(
-            DELAY_STEPS[0], DELAY_STEPS[1] + 1, (n,), generator=self.generator, device=self.device
-        )
-        self.position_noise_m[ids] = self.uniform(n, *POSITION_NOISE_M)
-        self.history[ids] = self.person_record(ids)[:, None, :]
-
         for name in ("follow_scored", "follow_good", "orbit_scored", "orbit_good", "spots_scored", "spots_reached",
                      "close_steps"):
             getattr(self, name)[ids] = 0.0
         self.min_person_m[ids] = float("inf")
 
-        self.update_camera(ids)
-        self.update_targets()
-        # Start near the target (±0.3 m, so at least ~1.2 m from the person), never below 1 m.
+        self.update_targets()  # the true target (the seen one is redone below)
+        # Start near the target (±0.3 m, so at least ~1.2 m from the person), never below 1 m, tipped up to 30°,
+        # nose within ±30° of the person (a camera drone takes off looking at you).
         start = self.target[ids] + self.uniform(n, -0.3, 0.3, size=3)
         start[:, 2] = start[:, 2].clamp_min(1.0)
         self.state[ids, POS] = start
+        # Already moving with the target, as if it had been flying a while. (Starting still, a drone placed on the
+        # orbit in front of a jogger had 0.35 s to reach 3 m/s backwards: impossible, and a crash every time.)
+        self.state[ids, VEL] = self.target_vel[ids] + self.uniform(n, -0.3, 0.3, size=3)
+        rel = self.person_xy[ids] - start[:, :2]
+        yaw = torch.atan2(rel[:, 1], rel[:, 0]) + self.uniform(n, -START_YAW_RAD, START_YAW_RAD)
+        up = torch.zeros(n, 3, device=self.device)
+        up[:, 2] = 1.0
+        tilt_axis = torch.zeros(n, 3, device=self.device)
+        tilt_axis[:, :2] = torch.randn(n, 2, generator=self.generator, device=self.device)
+        tilt = quat_from_axis_angle(tilt_axis, self.uniform(n, 0.0, math.radians(30)))
+        self.state[ids, QUAT] = quat_multiply(tilt, quat_from_axis_angle(up, yaw))
+        self.tracker.reset(ids, self.person_record(ids), start)
+        self.update_targets()
 
     def person_record(self, ids: torch.Tensor | None = None) -> torch.Tensor:
         """(n, 6) the person's true state as one history row: x, y, heading, vx, vy, turn rate."""
@@ -338,9 +363,10 @@ class FollowEnv(HoverEnv):
         """One policy step (dt = 0.02 s) of the walking model, for every person at once.
 
         speed:   moves toward the gait's speed goal, at most +1.5 m/s² / −2.5 m/s²
-        turning: u ← u − u·dt/τ + σ·√(2·dt/τ)·noise   (a smooth random turn drive, τ = 1 s, σ = 0.5 rad/s)
+        turning: u ← u − u·dt/τ + σ·√(2·dt/τ)·noise   (a smooth random turn drive, τ = 2 s, σ = 0.3 rad/s)
                  near the arena edge and heading outward: turn toward the middle as hard as allowed
-                 |turn rate| ≤ min(1.2 rad/s, 3 m/s² / speed); standing people turn slowly
+                 |turn rate| ≤ min(1.2 rad/s, 3 m/s² / speed); standing people turn slowly;
+                 and the turn rate changes by at most 2 rad/s² (no snapping from left to right)
         position: p ← p + speed · (cos ψ, sin ψ) · dt, kept inside |x|, |y| ≤ 5 m
         """
         dt = POLICY_DT_S
@@ -371,34 +397,13 @@ class FollowEnv(HoverEnv):
         outward = (xy[:, 0] * torch.cos(heading) + xy[:, 1] * torch.sin(heading)) > 0
         turn = torch.where(near_wall & outward, torch.sign(to_middle) * limit, turn)
         turn = torch.maximum(torch.minimum(turn, limit), -limit)
+        # People don't snap from turning left to turning right: the turn rate changes by at most 2 rad/s².
+        step = TURN_ACCEL_MAX_RAD_S2 * dt
+        turn = self.person_turn_rate + (turn - self.person_turn_rate).clamp(-step, step)
         self.person_turn_rate = turn
         self.person_heading = wrap_angle(heading + turn * dt)
         direction = torch.stack((torch.cos(self.person_heading), torch.sin(self.person_heading)), dim=1)
         self.person_xy = (xy + self.person_speed[:, None] * direction * dt).clamp(-ARENA_M, ARENA_M)
-
-    def update_camera(self, ids: torch.Tensor | None = None) -> None:
-        """The camera's estimate of each person: the history row `delay` steps back, plus fresh Gaussian noise.
-
-        seen position = p(t − delay) + σ · noise      (σ = 5–10 cm per episode)
-        seen velocity = v(t − delay) + 0.2 m/s · noise
-        seen heading  = ψ(t − delay) + 0.05 rad · noise
-        With camera=False the estimate is the true state, now.
-        """
-        sl = slice(None) if ids is None else ids
-        n = self.n_envs if ids is None else len(ids)
-        if not self.camera:
-            row = self.history[sl, 0]
-        else:
-            row = self.history[sl].gather(1, self.delay_steps[sl].view(-1, 1, 1).expand(n, 1, 6))[:, 0]
-        self.seen_xy[sl] = row[:, 0:2]
-        self.seen_heading[sl] = row[:, 2]
-        self.seen_vel[sl] = row[:, 3:5]
-        self.seen_turn_rate[sl] = row[:, 5]
-        if self.camera:
-            noise = torch.randn(n, 5, generator=self.generator, device=self.device)
-            self.seen_xy[sl] += self.position_noise_m[sl, None] * noise[:, 0:2]
-            self.seen_vel[sl] += VELOCITY_NOISE_MPS * noise[:, 2:4]
-            self.seen_heading[sl] = wrap_angle(self.seen_heading[sl] + HEADING_NOISE_RAD * noise[:, 4])
 
     # ---------- targets ----------
 
@@ -494,10 +499,16 @@ class FollowEnv(HoverEnv):
         person = torch.cat((self.seen_xy, torch.full_like(self.seen_xy[:, :1], PERSON_CENTRE_Z_M)), dim=1)
         person_vel = torch.cat((self.seen_vel, torch.zeros_like(self.seen_vel[:, :1])), dim=1)
         one_hot = torch.nn.functional.one_hot(self.mode, len(MODES)).float()
+        age = self.tracker.age_s.clamp(max=AGE_CAP_S)[:, None]
         return torch.cat(
-            (self.seen_target - pos, self.seen_target_vel, person - pos, person_vel - self.state[:, VEL], one_hot),
+            (self.seen_target - pos, self.seen_target_vel, person - pos, person_vel - self.state[:, VEL], one_hot, age),
             dim=1,
         )
+
+    def drone_yaw(self) -> torch.Tensor:
+        """(N,) which way each drone's nose points, seen from above (rad, 0 = +x): the body x axis in the world."""
+        rotation = quat_to_matrix(self.state[:, QUAT])
+        return torch.atan2(rotation[:, 1, 0], rotation[:, 0, 0])
 
     def person_gap(self) -> torch.Tensor:
         """(N,) metres from each drone to its person's body."""
@@ -521,6 +532,8 @@ class FollowEnv(HoverEnv):
             - PROXIMITY_WEIGHT * too_close
             - CLOSING_WEIGHT * self.closing_speed() * ((CLOSING_ZONE_M - gap) / (CLOSING_ZONE_M - SAFE_DISTANCE_M)).clamp(0.0, 1.0)
         ).clamp_min(0.0)
+        if self.tracker.profile.fov_deg is not None:  # camera: keeping the person in view pays a little
+            reward = reward + VIEW_BONUS * self.tracker.visible.float()
         return torch.where(self._crashed(), reward - CRASH_PENALTY, reward)
 
     def closing_speed(self) -> torch.Tensor:
@@ -601,8 +614,7 @@ class FollowEnv(HoverEnv):
         self.score_spots(again)
         self.orbit_angle = wrap_angle(self.orbit_angle + self.orbit_rate * POLICY_DT_S)
         self.move_person()
-        self.history = torch.cat((self.person_record()[:, None, :], self.history[:, :-1]), dim=1)
-        self.update_camera()
+        self.tracker.step(self.person_record(), self.state[:, POS], self.drone_yaw())
         self.point_new_spots(first | again)  # after the camera update: the person points from where they're seen now
         self.update_targets()
 

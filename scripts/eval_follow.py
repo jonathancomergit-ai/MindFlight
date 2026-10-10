@@ -18,6 +18,8 @@ import argparse
 import torch
 
 from mindflight.envs import make_env
+from mindflight.physics.dynamics import POS, QUAT, VEL
+from mindflight.physics.rotations import quat_from_axis_angle
 from mindflight.rl.train import evaluate, load_policy
 
 MODES = ("follow", "orbit", "point", "all")
@@ -51,13 +53,52 @@ def score_modes(path: str, n: int = 1000, seed: int = 12345, device: str | None 
     return results
 
 
+@torch.no_grad()
+def sensor_limit(
+    person_sensor: str, n: int = 1000, seed: int = 12345, device: str | None = None, predict: bool = False
+) -> dict:
+    """A "perfect follower" for this sensor: always exactly where the sensor says the target is (teleported there
+    every step, nose toward where it sees the person). No flying at all, so what is left is only the sensor's error.
+    predict=True: it first moves the measurement forward by its age (position + velocity × age, heading + turn rate
+    × age), the simplest way to make up for the delay. Returns follow % and orbit % (same scoring as the policies)."""
+    device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+    out = {}
+    for mode in ("follow", "orbit"):
+        env = make_env("follow", n, device=device, seed=seed, mode=mode, difficulty=1.0, person_sensor=person_sensor)
+        env.reset()
+        up = torch.zeros(n, 3, device=env.device)
+        up[:, 2] = 1.0
+        for _ in range(env.max_steps - 1):
+            target = env.seen_target
+            if predict:
+                age = env.tracker.age_s[:, None]
+                target, _ = env.mode_target(env.seen_xy + env.seen_vel * age, env.seen_vel,
+                                            env.seen_heading + env.seen_turn_rate * age[:, 0], env.seen_turn_rate)
+            env.state[:, POS] = target
+            env.state[:, VEL] = 0.0
+            rel = env.seen_xy - env.seen_target[:, :2]
+            env.state[:, QUAT] = quat_from_axis_angle(up, torch.atan2(rel[:, 1], rel[:, 0]))
+            env._post_step()
+        good, scored = (env.follow_good, env.follow_scored) if mode == "follow" else (env.orbit_good, env.orbit_scored)
+        out[mode] = 100 * good.sum().item() / max(scored.sum().item(), 1)
+    return out
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("policies", nargs="+")
     parser.add_argument("--n", type=int, default=1000)
     parser.add_argument("--seed", type=int, default=12345)
-    parser.add_argument("--camera", default="true", help="false = the policy sees the person perfectly")
+    parser.add_argument("--person-sensor", default=None, help="camera, gps_rtk, gps or perfect (default: as trained)")
+    parser.add_argument("--env", nargs="*", default=[], metavar="KEY=VALUE", help="e.g. sensors=lighthouse real_world=true")
+    parser.add_argument("--sensor-limit", action="store_true", help="also print the perfect-follower limit per sensor")
     args = parser.parse_args()
+    env_kwargs = {}
+    for item in args.env:
+        key, value = item.split("=", 1)
+        env_kwargs[key] = value.lower() == "true" if value.lower() in ("true", "false") else value
+    if args.person_sensor:
+        env_kwargs["person_sensor"] = args.person_sensor
 
     def pct(v):
         return "-" if v is None else f"{v:.1f} %"
@@ -65,12 +106,22 @@ def main() -> None:
     print("| policy | modes | follow | orbit | point | crashed | hit person | < 1 m (s) |")
     print("|---|---|---|---|---|---|---|---|")
     for path in args.policies:
-        results = score_modes(path, n=args.n, seed=args.seed, camera=args.camera.lower() == "true")
+        results = score_modes(path, n=args.n, seed=args.seed, **env_kwargs)
         for mode, s in results.items():
             print(
                 f"| {path} | {mode} | {pct(s['follow'])} | {pct(s['orbit'])} | {pct(s['point'])} | "
                 f"{s['crashed']:.1f} % | {s['hit_person']:.1f} % | {s['close_s']:.2f} |"
             )
+
+    if args.sensor_limit:
+        print()
+        print("| person sensor | trusts it: follow | orbit | predicts: follow | orbit |")
+        print("|---|---|---|---|---|")
+        for sensor in ("perfect", "camera", "gps_rtk", "gps"):
+            trust = sensor_limit(sensor, n=args.n, seed=args.seed)
+            ahead = sensor_limit(sensor, n=args.n, seed=args.seed, predict=True)
+            print(f"| {sensor} | {trust['follow']:.1f} % | {trust['orbit']:.1f} % | {ahead['follow']:.1f} % | "
+                  f"{ahead['orbit']:.1f} % |")
 
 
 if __name__ == "__main__":

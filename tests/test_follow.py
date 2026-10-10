@@ -1,4 +1,5 @@
-"""P6: the follow / orbit / point task. The person, the targets, the safety rules, the camera, the viewer shapes."""
+"""P6: the follow / orbit / point task. The person, the targets, the safety rules, the viewer shapes.
+(The person sensors have their own tests in test_person_sensor.py.)"""
 
 import math
 
@@ -41,15 +42,16 @@ def test_shapes_and_observation_columns():
     env = make(32)
     obs = env.observe()
     assert env.action_mode == "attitude"
-    assert obs.shape == (32, 19 + 15) == (32, env.obs_size)
+    assert obs.shape == (32, 19 + 16) == (32, env.obs_size)
     pos = env.state[:, POS]
     assert torch.allclose(obs[:, 19:22], env.seen_target - pos)  # same first 3 task numbers as waypoint
     assert torch.allclose(obs[:, 31:34].sum(1), torch.ones(32))
     assert torch.equal(obs[:, 31:34].argmax(1), env.mode)
+    assert torch.allclose(obs[:, 34], env.tracker.age_s)  # how old the person measurement is
     person = torch.cat((env.seen_xy, torch.full((32, 1), follow.PERSON_CENTRE_Z_M)), dim=1)
     assert torch.allclose(obs[:, 25:28], person - pos)
     obs, reward, done, info = env.step(torch.zeros(32, 4))
-    assert obs.shape == (32, 34) and reward.shape == (32,)
+    assert obs.shape == (32, 35) and reward.shape == (32,)
 
 
 def test_person_stays_in_arena_and_moves_like_a_person():
@@ -63,7 +65,10 @@ def test_person_stays_in_arena_and_moves_like_a_person():
     for _ in range(1500):
         heading_before = env.person_heading.clone()
         speed_before = env.person_speed.clone()
+        turn_before = env.person_turn_rate.clone()
         env.move_person()
+        turn_change = (env.person_turn_rate - turn_before).abs() / POLICY_DT_S
+        assert turn_change.max() <= follow.TURN_ACCEL_MAX_RAD_S2 + 1e-3  # no snapping from left to right
         turned = follow.wrap_angle(env.person_heading - heading_before).abs() / POLICY_DT_S
         assert turned.max() <= TURN_MAX_RAD_S + 1e-4
         # A jogger can't turn on the spot: speed × turn rate ≤ the sideways-acceleration limit.
@@ -76,7 +81,7 @@ def test_person_stays_in_arena_and_moves_like_a_person():
         jogged |= env.person_speed > 2.4
     assert max_xy <= ARENA_M
     assert max_speed <= JOG_SPEED_MPS[1] + 1e-5
-    assert stood.float().mean() > 0.3 and jogged.float().mean() > 0.3  # many people did both in 30 s
+    assert stood.float().mean() > 0.3 and jogged.float().mean() > 0.15  # many stopped, some jogged, in 30 s
 
 
 def test_mode_targets_by_hand():
@@ -126,7 +131,7 @@ def test_orbit_target_goes_round_at_the_set_rate():
 
 
 def test_pointing_waits_for_the_person_to_stop_and_spots_are_2_to_4_m_away():
-    env = make(256, seed=2, mode="point", camera=False)
+    env = make(256, seed=2, mode="point", person_sensor="perfect")
     env.person_speed[:] = 2.0  # walking into point mode: they must stop first
     saw_spot_while_moving = False
     for _ in range(300):
@@ -145,11 +150,11 @@ def test_pointing_waits_for_the_person_to_stop_and_spots_are_2_to_4_m_away():
 
 
 def test_easy_curriculum_keeps_spots_on_the_drones_side_and_no_jogging():
-    env = make(512, seed=7, mode="point", camera=False, difficulty=0.0)
+    env = make(512, seed=7, mode="point", person_sensor="perfect", difficulty=0.0)
     assert env.random_gait_speeds(5000).max() <= 0.75
     assert env.random_orbit_rates(5000).abs().max() <= 0.3 + 1e-6
     env.person_xy = env.uniform(512, -1.0, 1.0, size=2)  # near the middle: every direction fits in the arena
-    env.seen_xy = env.person_xy.clone()
+    env.tracker.seen_xy = env.person_xy.clone()
     park_drones(env, torch.cat((env.person_xy + torch.tensor([2.0, 0.0]), torch.full((512, 1), 1.5)), dim=1))
     env.point_new_spots(torch.ones(512, dtype=torch.bool))
     to_spot = env.spot[:, :2] - env.person_xy
@@ -159,9 +164,9 @@ def test_easy_curriculum_keeps_spots_on_the_drones_side_and_no_jogging():
 
 def test_spots_at_the_arena_edge_are_not_behind_the_person():
     """A person at the edge, the drone outside them: the spot must not be through the person (the old flip bug)."""
-    env = make(512, seed=8, mode="point", camera=False, difficulty=0.0)
+    env = make(512, seed=8, mode="point", person_sensor="perfect", difficulty=0.0)
     env.person_xy = torch.tensor([[4.8, 0.0]]).repeat(512, 1)
-    env.seen_xy = env.person_xy.clone()
+    env.tracker.seen_xy = env.person_xy.clone()
     park_drones(env, torch.tensor([[6.8, 0.0, 1.5]]).repeat(512, 1))
     env.point_new_spots(torch.ones(512, dtype=torch.bool))
     assert env.spot[:, :2].abs().max() <= follow.SPOT_LIMIT_M + 1e-5
@@ -182,7 +187,10 @@ def test_curriculum_climbs_when_crashes_are_rare():
     stuck = make(8, difficulty=None)
     for _ in range(30):
         stuck.update_curriculum({"episode_crashed": 0.2})
-    assert stuck.difficulty == 0.0
+    assert stuck.difficulty == pytest.approx(30 / follow.CURRICULUM_RAMP, abs=1e-3)  # only the slow floor
+    for _ in range(follow.CURRICULUM_RAMP):
+        stuck.update_curriculum({"episode_crashed": 0.2})
+    assert stuck.difficulty == 1.0  # the full task always arrives
 
 
 def test_person_distance_is_to_the_body_surface():
@@ -195,6 +203,7 @@ def test_person_distance_is_to_the_body_surface():
 def test_too_close_to_the_person_is_a_crash_and_near_is_a_soft_penalty():
     env = make(4, mode="follow")
     env.person_xy[:] = 0.0
+    env.person_speed[:] = 0.0  # standing, so the closing-speed term is 0 for still drones
     # Gaps to the body: 0.6 m (crash), 0.85 m (soft zone), 1.2 m (fine), 3 m (fine).
     drones = torch.tensor([[0.85, 0.0, 1.0], [1.10, 0.0, 1.0], [1.45, 0.0, 1.0], [3.25, 0.0, 1.0]])
     park_drones(env, drones)
@@ -219,7 +228,7 @@ def test_flying_at_the_person_costs_more_than_flying_away():
     env = make(3, mode="follow")
     env.person_xy[:] = 0.0
     env.person_speed[:] = 0.0
-    drones = torch.tensor([[1.75, 0.0, 1.5]] * 3)  # 1.5 m from the body: half of the closing cost
+    drones = torch.tensor([[1.5, 0.0, 1.5]] * 3)  # 1.25 m from the body: half of the closing cost
     park_drones(env, drones)
     env.target = drones.clone()
     env.state[:, VEL] = torch.tensor([[-2.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 2.0, 0.0]])  # toward, away, past
@@ -246,55 +255,31 @@ def test_reward_never_negative_before_a_crash():
     assert env._reward()[0].item() >= -1e-3
 
 
-def test_camera_delay_shifts_by_the_right_number_of_steps(monkeypatch):
-    monkeypatch.setattr(follow, "VELOCITY_NOISE_MPS", 0.0)
-    monkeypatch.setattr(follow, "HEADING_NOISE_RAD", 0.0)
-    env = make(16, seed=3, mode="follow")
-    env.position_noise_m[:] = 0.0
-    env.delay_steps[:] = torch.arange(16) % 3 + 3  # 3, 4, 5 steps
-    env.person_speed[:] = 1.0
-    env.speed_goal[:] = 1.0
-    true_xy = []
-    true_vel = []
-    for _ in range(20):
-        env._post_step()
-        true_xy.append(env.person_xy.clone())
-        true_vel.append(env.person_speed[:, None] * torch.stack(
-            (torch.cos(env.person_heading), torch.sin(env.person_heading)), dim=1))
-    for i in range(16):
-        d = int(env.delay_steps[i])
-        assert torch.allclose(env.seen_xy[i], true_xy[-1 - d][i], atol=1e-6)
-        assert torch.allclose(env.seen_vel[i], true_vel[-1 - d][i], atol=1e-6)
-    # Moving at about 1 m/s, a 5-step (0.1 m) delay leaves the estimate ~10 cm behind.
-    lag = (env.person_xy - env.seen_xy).norm(dim=1)
-    assert lag[env.delay_steps == 5].mean().item() == pytest.approx(0.1, abs=0.02)
-
-
-def test_camera_noise_has_the_right_size():
-    env = make(20000, seed=4, mode="follow")
-    env.position_noise_m[:] = 0.08
-    env.delay_steps[:] = 3
-    env.update_camera()
-    delayed = env.history[:, 3]
-    position_error = env.seen_xy - delayed[:, 0:2]
-    velocity_error = env.seen_vel - delayed[:, 3:5]
-    heading_error = follow.wrap_angle(env.seen_heading - delayed[:, 2])
-    assert position_error.std().item() == pytest.approx(0.08, rel=0.03)
-    assert position_error.mean().abs().item() < 0.003
-    assert velocity_error.std().item() == pytest.approx(follow.VELOCITY_NOISE_MPS, rel=0.03)
-    assert heading_error.std().item() == pytest.approx(follow.HEADING_NOISE_RAD, rel=0.03)
-    # Per-episode noise sizes and delays are drawn from the stated ranges.
-    fresh = make(2000, seed=5)
-    assert fresh.position_noise_m.min() >= 0.05 and fresh.position_noise_m.max() <= 0.10
-    assert set(fresh.delay_steps.unique().tolist()) == {3, 4, 5}
-
-
-def test_without_camera_the_estimate_is_the_truth():
-    env = make(8, camera=False)
+def test_with_a_perfect_sensor_the_estimate_is_the_truth():
+    env = make(8, person_sensor="perfect")
     for _ in range(10):
         env._post_step()
     assert torch.allclose(env.seen_xy, env.person_xy)
     assert torch.allclose(env.seen_target, env.target)
+
+
+def test_flights_start_looking_at_the_person():
+    env = make(512, seed=9)
+    rel = env.person_xy - env.state[:, POS][:, :2]
+    off = follow.wrap_angle(torch.atan2(rel[:, 1], rel[:, 0]) - env.drone_yaw()).abs()
+    assert off.max() <= follow.START_YAW_RAD + 0.1  # (+ a little: the start tilt moves the nose's heading too)
+    assert env.tracker.visible.all()
+
+
+def test_camera_view_bonus_only_while_in_view():
+    env = make(2, mode="follow")
+    env.person_xy[:] = 0.0
+    env.person_speed[:] = 0.0
+    park_drones(env, torch.tensor([[2.25, 0.0, 1.5]] * 2))
+    env.target = env.state[:, POS].clone()
+    env.tracker.visible = torch.tensor([True, False])
+    reward = env._reward()
+    assert reward[0].item() - reward[1].item() == pytest.approx(follow.VIEW_BONUS, abs=1e-5)
 
 
 def test_scores_follow_time_after_settling_and_reached_spots():
@@ -338,7 +323,7 @@ def test_display_objects_and_viewer_scene():
     from mindflight.viewer.policy_source import SHOW, PolicySource
 
     assert "follow" in SHOW
-    env = make(4, mode="point", camera=False)
+    env = make(4, mode="point", person_sensor="perfect")
     env.person_speed[:] = 0.0
     for _ in range(30):
         env._post_step()
@@ -388,9 +373,35 @@ def test_widened_policy_flies_like_the_old_one(tmp_path):
     torch.save({"task": "waypoint", "env_kwargs": {"action_mode": "attitude"}, "iteration": 1,
                 "config": asdict(config), "model": old.state_dict()}, path)
     checkpoint = widen_policy.widen(str(path), "follow", {}, "cpu", n=64, steps=5)
-    new = ActorCritic(34, 4, config.hidden)
+    new = ActorCritic(35, 4, config.hidden)
     new.load_state_dict(checkpoint["model"])
-    obs = torch.randn(100, 34)
+    obs = torch.randn(100, 35)
     assert torch.allclose(new.act(obs, deterministic=True), old.act(obs[:, :22], deterministic=True), atol=1e-5)
     assert torch.allclose(new.value(obs), old.value(obs[:, :22]), atol=1e-5)
     assert checkpoint["task"] == "follow"
+
+
+def load_script(name: str):
+    import importlib.util
+    from pathlib import Path
+
+    path = Path(__file__).parent.parent / "scripts" / f"{name}.py"
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_teacher_follows_orbits_and_points_without_crashing():
+    """scripts/teach_follow.py: the hand-written controller PPO starts from really does the job (short CPU check)."""
+    from mindflight.rl.train import evaluate
+
+    teach = load_script("teach_follow")
+    for mode, key, bar in (("follow", "follow", 0.5), ("orbit", "orbit", 0.85)):
+        env = make_env("follow", 64, device="cpu", seed=1, mode=mode, difficulty=1.0, episode_s=8.0)
+        r = evaluate(teach.Teacher(env), env, seed=1)
+        assert r["crashed"] == 0.0
+        assert r[f"{key}_good_s"] / r[f"{key}_scored_s"] > bar
+    env = make_env("follow", 64, device="cpu", seed=1, mode="point", difficulty=1.0, episode_s=10.0)
+    r = evaluate(teach.Teacher(env), env, seed=1)
+    assert r["crashed"] == 0.0 and r["spots_reached"] / r["spots"] > 0.9
