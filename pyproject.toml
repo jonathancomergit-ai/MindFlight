@@ -7,7 +7,7 @@ name = "mindflight"
 version = "0.0.1"
 description = "GPU-parallel Crazyflie drone simulator + reinforcement learning, with a live 3D web viewer"
 requires-python = ">=3.11"
-# torch is not listed: install the CUDA build for your GPU yourself (see AGENTS.md).
+# torch is not listed: install the CUDA build for your GPU yourself (see CONTRIBUTING.md).
 dependencies = [
     "numpy>=1.26",
     "fastapi>=0.110",

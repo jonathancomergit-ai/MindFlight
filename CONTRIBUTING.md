@@ -1,4 +1,4 @@
-# Rules for agents working on MindFlight
+# How to contribute to MindFlight
 
 Read `PLAN.md` first. Its **Conventions** section is the contract: units, frames, quaternion order, state layout,
 motor layout. Don't change a convention in a feature PR; propose it in its own issue.

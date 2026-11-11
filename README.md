@@ -30,7 +30,7 @@ On Windows you can just double-click `MindFlight Hub.bat`.
 - **Learning:** PPO in one readable file, with a curriculum that makes each task harder as the brain gets better.
 - **Viewer:** three.js in the browser, streamed live from Python.
 
-See [PLAN.md](PLAN.md) for how it all fits together and [AGENTS.md](AGENTS.md) for the rules for contributing.
+See [PLAN.md](PLAN.md) for how it all fits together and [CONTRIBUTING.md](CONTRIBUTING.md) if you want to help out.
 
 ## What went wrong (and how I fixed it)
 
