@@ -42,8 +42,8 @@ and where it is, and find where that line meets the plane. Then:
 
 | Crossed... | Result |
 |---|---|
-| inside the opening (6 cm margin for the drone's size) | ✅ passed, on to the next gate |
-| on the frame (up to 10 cm outside the opening) | 💥 crash |
+| inside the opening (6 cm margin for the drone's size) | passed, on to the next gate |
+| on the frame (up to 10 cm outside the opening) | crash |
 | wide of the gate | nothing: missed it, go back and try again |
 
 ## What the drone sees (11 extra numbers)
