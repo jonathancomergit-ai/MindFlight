@@ -1,0 +1,18 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "MindFlight: thousands of simulated drones learning to fly at once on one GPU"
+type: software
+authors:
+  - family-names: Comer
+    given-names: Jonathan
+    alias: Jonjoe1001
+repository-code: "https://github.com/jonathancomergit-ai/MindFlight"
+url: "https://jonjoe1001.dev/projects/mindflight.html"
+license: MIT
+date-released: "2026-11-11"
+keywords:
+  - reinforcement learning
+  - PPO
+  - quadcopter
+  - drone simulation
+  - PyTorch
