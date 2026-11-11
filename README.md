@@ -1,18 +1,52 @@
 # MindFlight 🛸🧠
 
-Thousands of simulated Crazyflie drones learning to fly at once, on the GPU, watched live in your browser.
+Thousands of simulated drones learning to fly at once, on one GPU, and you can watch every brain learn live in your
+browser!
 
-A learning project and proof of concept for physics simulation + reinforcement learning.
+![a pack of simulated drones flying together](docs/img/p5_packs.jpg)
 
-- **Physics:** our own batched quadcopter model in PyTorch, using published Crazyflie 2.x numbers
-- **Learning:** PPO, written as one readable file
-- **Viewer:** Three.js in the browser, streamed live from Python
+I wanted to know what every number in there was doing, so I wrote the drone physics myself in PyTorch from the
+published numbers for a real Crazyflie 2.x. The learning is PPO, which I wrote as one file so you can read it top to
+bottom.
 
-See [PLAN.md](PLAN.md) for how it fits together and the levels, and [AGENTS.md](AGENTS.md) for contributor rules.
+## Try it
 
-## Where it stands
+1. `pip install -e .[dev]` (Python 3.11+, PyTorch, and an NVIDIA GPU helps a lot)
+2. `python -m mindflight.hub`
+3. Your browser opens, so pick a show from the sidebar and watch!
 
-All seven levels are done. Each score is from 1,000 fixed test flights with the policy's mean action, on the hardest setting:
+On Windows you can just double-click `MindFlight Hub.bat`.
+
+## How it works
+
+- **Physics:** every drone is one row of one big tensor, so 16,384 of them step together on the GPU. Rotation uses
+  RK4 so a tumbling drone doesn't gain energy it never had.
+- **Motors and controller:** motors lag like real ones, and the brain sends thrust, roll, pitch and yaw rate, the same
+  kind of command a real Crazyflie takes over the radio.
+- **Sensors:** the brain never sees the true state. It gets noisy estimates that are a little late, like a real
+  drone's.
+- **Real-world drones:** every training flight is a slightly different drone (mass, motors, battery, wind), so the
+  brain can't cheat on one perfect model.
+- **Learning:** PPO in one readable file, with a curriculum that makes each task harder as the brain gets better.
+- **Viewer:** three.js in the browser, streamed live from Python.
+
+See [PLAN.md](PLAN.md) for how it all fits together and [AGENTS.md](AGENTS.md) for the rules for contributing.
+
+## What went wrong (and how I fixed it)
+
+- **Every drone timed out on the same step.** All 4,096 hit their time limit together, the value loss spiked on that
+  beat and the waypoint brain fell apart. Now each drone starts at a random point in its episode.
+- **Perfect-looking sensor noise broke hover.** I drew fresh noise every 20 ms and the flow-deck hover stalled at
+  about 80%, because the brain chased jitter a real filter would never produce. The noise now wanders smoothly, like
+  a real estimator's.
+- **A strong pull home made a lazy guard.** In the ball-blocking task, a big reward for staying at its spot taught the
+  drone to never leave it. A gentle pull fixed it.
+- **It only knew one kind of throw.** A brain trained on medium throws chased high lobs straight into the person's
+  safety zone. Mixing fast throws and lobs in training fixed it.
+
+## Results
+
+All seven levels are done. Every score is from 1,000 fixed test flights with the brain's mean action, on the hardest setting:
 
 | Level | Done when | Result |
 |---|---|---|
@@ -95,3 +129,19 @@ python -m mindflight.deploy --policy policies/real_waypoint.pt --sitl --waypoint
 That flies the full mission (takeoff, waypoints, landing) on the simulated Crazyflie through the same code that
 will fly the real one. With a real drone: swap `--sitl` for `--uri radio://0/80/2M/E7E7E7E7E7`, after the
 first-flight checklist in [docs/hardware.md](docs/hardware.md).
+
+## Credits
+
+- **Drone numbers:** the Crazyflie 2.x model in [gym-pybullet-drones](https://github.com/utiasDSL/gym-pybullet-drones)
+  (`cf2x.urdf`), which cites Förster 2015, Landry 2015 and Luis & Le Ny 2016.
+- **Radio and thrust limits:** Bitcraze's [crazyflie-firmware](https://github.com/bitcraze/crazyflie-firmware) and
+  cflib docs.
+- **Viewer:** [three.js](https://threejs.org) (MIT), loaded from a pinned CDN version.
+
+## Licence
+
+MIT, see [LICENSE](LICENSE).
+
+## How to cite
+
+If this helps your work, there's a [CITATION.cff](CITATION.cff) (GitHub shows a "Cite this repository" button for it).
