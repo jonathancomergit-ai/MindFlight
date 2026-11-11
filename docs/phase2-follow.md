@@ -14,10 +14,10 @@ The brain is told the mode as three numbers (a "one-hot": `1 0 0` = follow). The
 
 | Mode | Score | Bar | Passed? |
 |---|---|---|---|
-| follow | **76 %** of the time within 0.3 m | ≥ 95 % | ❌ no (see "Why follow misses its bar") |
-| orbit | **97 %** of the time within 0.3 m of the 2 m radius | ≥ 90 % | ✅ |
-| point | **99 %** of pointed spots reached (15 cm) | ≥ 90 % | ✅ |
-| crashes | **0–0.4 %** per mode; **1.0 %** with modes switching | ≤ 1 % | ✅ (just) |
+| follow | **76 %** of the time within 0.3 m | ≥ 95 % | no (see "Why follow misses its bar") |
+| orbit | **97 %** of the time within 0.3 m of the 2 m radius | ≥ 90 % | yes |
+| point | **99 %** of pointed spots reached (15 cm) | ≥ 90 % | yes |
+| crashes | **0–0.4 %** per mode; **1.0 %** with modes switching | ≤ 1 % | yes (just) |
 
 The shipped brain, `policies/follow.pt`, is **copied from a hand-written controller** (behaviour cloning + DAgger),
 not learned by PPO. Every PPO run we tried was worse (below). That is the main lesson of this task.
